@@ -1,0 +1,152 @@
+// ======================================================================
+// BFW_SS2_Platform.h
+// ======================================================================
+#pragma once
+
+#ifndef BFW_SS2_PLATFORM_H
+#define BFW_SS2_PLATFORM_H
+
+// ======================================================================
+// includes
+// ======================================================================
+#include "BFW.h"
+#include "BFW_SoundSystem2.h"
+#include "BFW_SS2_Private.h"
+
+// ======================================================================
+// prototypes
+// ======================================================================
+void
+SS2rPlatform_SoundChannel_Initialize(
+	SStSoundChannel				*inSoundChannel);
+
+void
+SS2rPlatform_SoundChannel_Pause(
+	SStSoundChannel				*inSoundChannel);
+
+void
+SS2rPlatform_SoundChannel_Play(
+	SStSoundChannel				*inSoundChannel);
+
+void
+SS2rPlatform_SoundChannel_Resume(
+	SStSoundChannel				*inSoundChannel);
+
+#if UUmOpenAL
+UUtBool
+SS2rPlatform_SoundChannel_IsPlaying(
+	SStSoundChannel				*inSoundChannel);
+#endif
+
+UUtBool
+SS2rPlatform_SoundChannel_SetSoundData(
+	SStSoundChannel				*inSoundChannel,
+	SStSoundData				*inSoundData);
+
+void
+SS2rPlatform_SoundChannel_SetPan(
+	SStSoundChannel				*inSoundChannel,
+	UUtUns32					inPanFlag,
+	float						inPan);
+
+void
+SSiSoundChannel_SetPaused(
+	SStSoundChannel				*inSoundChannel,
+	UUtBool						inPaused);
+
+void
+SS2rPlatform_SoundChannel_SetPitch(
+	SStSoundChannel				*inSoundChannel,
+	float						inPitch);
+
+void
+SS2rPlatform_SoundChannel_SetVolume(
+	SStSoundChannel				*inSoundChannel,
+	float						inVolume);
+
+void
+SS2rPlatform_SoundChannel_Silence(
+	SStSoundChannel				*inSoundChannel);
+
+void
+SS2rPlatform_SoundChannel_Stop(
+	SStSoundChannel				*inSoundChannel);
+
+/* Propagate the channel's loop flag (SScSCStatus_Looping) to the platform
+   immediately. Without this, SSiSoundChannel_SetLooping only updates the
+   shadow bit; on OpenAL the source's AL_LOOPING is only set inside
+   SS2rPlatform_SoundChannel_Play(), so a later SetLooping(false) wouldn't
+   take effect and looping ambients (e.g. health_over) would loop forever. */
+void
+SS2rPlatform_SoundChannel_SetLooping(
+	SStSoundChannel				*inSoundChannel,
+	UUtBool						inLooping);
+
+void
+SS2rPlatform_SoundChannel_Terminate(
+	SStSoundChannel				*inSoundChannel);
+
+// ----------------------------------------------------------------------
+UUtError
+SS2rPlatform_Initialize(
+	UUtWindow					inWindow,
+	UUtUns32					*outNumChannels,
+	UUtBool						inUseSound);
+
+UUtError
+SS2rPlatform_InitializeThread(
+	void);
+
+void
+SS2rPlatform_TerminateThread(
+	void);
+
+void
+SS2rPlatform_Terminate(
+	void);
+
+#if UUmOpenAL
+/* Invalidate the OpenAL buffer cache on level unload (issue #59). Clears all
+   cached SStSoundData*-keyed buffers and resets the cache count so stale keys
+   can't survive a level transition. */
+void
+SS2rPlatform_BufferCache_FlushAll(
+	void);
+#endif
+
+// ----------------------------------------------------------------------
+void
+SSrDeleteGuard(
+	SStGuard					*inGuard);
+
+void
+SSrCreateGuard(
+	SStGuard					**inGuard);
+
+void
+SSrReleaseGuard(
+	SStGuard					*inGuard);
+
+void
+SSrWaitGuard(
+	SStGuard					*inGuard);
+
+// ----------------------------------------------------------------------
+void
+SS2rPlatform_GetDebugNeeds(
+	UUtUns32					*outNumLines);
+
+void
+SS2rPlatform_ShowDebugInfo_Overall(
+	IMtPoint2D					*inDest);
+
+void
+SS2rPlatform_PerformanceStartFrame(
+	void);
+
+void
+SS2rPlatform_PerformanceEndFrame(
+	void);
+
+// ======================================================================
+#endif /* BFW_SS2_PLATFORM_H */
