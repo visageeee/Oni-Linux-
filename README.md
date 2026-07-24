@@ -48,3 +48,8 @@ Binary lands at `build/bin/Oni`. Drop your `GameDataFolder` (PC or Mac retail, a
 - No in-game data-folder picker dialog on Linux yet (that's Cocoa-only on macOS) — place `GameDataFolder` next to the binary manually.
 - Save/settings persist to `~/Library/Application Support/OniARM64/` (yes, `Library` — kept for path-resolution parity with the macOS build; the directory is created automatically now).
 - If mouse-look feels off on a high-refresh-rate display, the built-in frame limiter should already handle it (see HISTORY.md); `ONI_FPS_CAP=0` disables it for comparison.
+
+- ### Credits
+- Original Source code used to port to linux
+- https://github.com/andiyar/OniARM64
+- 
