@@ -1,88 +1,93 @@
+# Oni for Linux
 
+A native Linux port of Bungie's 2001 game *Oni*, forked from [Oni-Linux-](https://github.com/eggplantredrage/Oni-Linux-). You need your own PC or Mac retail game data; the game assets are not included.
 
-## Oni-Linux
-## A Port Of The 2001 Bungie Game Oni TO Linux x86-84 
-A native Linux x86_64 build is now working, built on top of the project's existing `Platform_SDL` layer. Chapter 1 verified fully playable end-to-end (level load, combat, save/load, mouse-look).
+## Fork additions
 
-### Build
+- Mouse-look timing changes and a frame limiter for high-refresh displays.
+- Optional OpenGL colour grading.
+- Experimental per-pixel muzzle-flash lighting.
+- Experimental Syndicate Warehouse relighting, including fixture lights and coloured door-indicator coronas. Characters use approximate per-vertex lighting.
 
-Dependencies (Ubuntu/Debian):
+These lighting features are opt-in and require the Linux SDL/OpenGL renderer. They do not modify game assets.
+
+From `build/bin`, enable muzzle lights with:
+
+```bash
+ONI_WORLD_LIGHT=1 ./Oni
+```
+
+To also try the warehouse relighting, load Syndicate Warehouse with:
+
+```bash
+ONI_WAREHOUSE_LIGHT=1 ONI_WORLD_LIGHT=1 ./Oni
+```
+
+The warehouse experiment uses approximate fixture positions and up to eight lights per surface. It has no shadow pass: light can pass through walls, while reflective and transparent world surfaces retain their original lighting. The lighting adds rendering work and has not been performance tuned.
+
+For optional full-screen colour grading, including the UI:
+
+```bash
+ONI_SHADER=warm ./Oni
+```
+
+`ONI_SHADER=neutral` selects a passthrough shader. If a shader cannot be initialized, the game falls back to the original rendering path. Check `startup.txt` for `[shader]`, `[world-light]` and `[warehouse-light]` diagnostics.
+
+The frame limiter is enabled by default. Set `ONI_FPS_CAP=0` to disable it for comparison. See [HISTORY.md](HISTORY.md) for upstream changes.
+
+## Local work in progress
+
+The following additions exist in the local working tree but **are not yet in the published source**:
+
+- Relighting across gameplay levels, enabled with `ONI_RELIGHT=1`.
+- Lights that follow supported weapon projectiles and active fires.
+- Up to 16 per-pixel lights per surface on capable GPUs, with an eight-light fallback.
+- Approximate wall occlusion using cached line-of-sight checks.
+- Weapon-light response on characters and reduced door-indicator brightness.
+
+## Build and run
+
+Install the dependencies for your distribution:
+
+**Ubuntu / Debian**
 
 ```bash
 sudo apt-get install cmake build-essential libsdl2-dev libgl1-mesa-dev \
     libopenal-dev libavcodec-dev libavutil-dev pkg-config
 ```
 
-Fedora:
+**Fedora**
 
 ```bash
 sudo dnf install cmake gcc gcc-c++ SDL2-devel mesa-libGL-devel openal-soft-devel pkgconf-pkg-config
-# ffmpeg-devel needs RPM Fusion:
+# ffmpeg-devel requires RPM Fusion:
 sudo dnf install https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
-                 https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
+    https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
 sudo dnf install ffmpeg-devel
 ```
 
-Arch:
+**Arch Linux**
 
 ```bash
 sudo pacman -S cmake base-devel sdl2 mesa openal ffmpeg pkgconf
 ```
 
-Then:
+Build with CMake:
 
 ```bash
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo ..
-make -j$(nproc)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --parallel
 ```
 
-Binary lands at `build/bin/Oni`. Drop your `GameDataFolder` (PC or Mac retail, auto-detected) next to it and run `./Oni` from a real X11/Wayland session.
+Place your retail `GameDataFolder` beside `build/bin/Oni`, then launch from an X11 or Wayland session:
 
-### Known-good on
+```bash
+cd build/bin
+./Oni
+```
 
-- Ubuntu 24.04, Fedora 43 (x86_64)
+The Linux port has been used on x86-64 Ubuntu 24.04 and Fedora 43. Save data and settings use `~/Library/Application Support/OniARM64/` unless existing state files are found beside the executable. There is currently no Linux game-data folder picker.
 
-### Notes
+## Credits
 
-- No in-game data-folder picker dialog on Linux yet (that's Cocoa-only on macOS) — place `GameDataFolder` next to the binary manually.
-- Save/settings persist to `~/Library/Application Support/OniARM64/` (yes, `Library` — kept for path-resolution parity with the macOS build; the directory is created automatically now).
-- If mouse-look feels off on a high-refresh-rate display, the built-in frame limiter should already handle it (see HISTORY.md); `ONI_FPS_CAP=0` disables it for comparison.
-
-- ### Credits
-- Original Source code used to port to linux
-- https://github.com/andiyar/OniARM64
-- 
-
-### Experimental Linux shader
-
-The existing renderer can optionally apply an OpenGL shader to the completed
-frame (including UI). From `build/bin`, run `ONI_SHADER=warm ./Oni` for a subtle
-warm colour grade, or `ONI_SHADER=neutral ./Oni` to check the passthrough path.
-Run `./Oni` without the variable for the original renderer. Shader compilation
-or resource failures fall back to the original frame; see `startup.txt` for
-`[shader]` diagnostics. This is a fullscreen post-process, not per-material
-lighting or a normal-map shader. It adds a full-resolution texture copy and draw.
-
-### Experimental per-pixel weapon lights (Linux)
-
-Run `ONI_WORLD_LIGHT=1 ./Oni` from `build/bin` to enable brief muzzle lights
-on opaque world geometry. The normal launch leaves them off. This experiment
-supports up to four recent shots at a time; transparent, environment-mapped,
-character and UI geometry keep their original lighting. It does not cast
-shadows, so light can pass through walls. It adds per-surface shader work and
-has not been performance tuned. `[world-light]` messages in `startup.txt`
-report shader activation or failure. It can be combined with `ONI_SHADER=warm`.
-
-### Experimental Syndicate warehouse relighting (Linux)
-
-From `build/bin`, run `ONI_WAREHOUSE_LIGHT=1 ./Oni` and load Syndicate
-Warehouse. This blends down the baked vertex colours on opaque world surfaces
-and adds up to eight nearby per-pixel fixture lights per surface. Characters use a separate per-vertex approximation of nearby lights. The level does not retain
-fixture light records in the tested data, so the experiment instead places
-proxy lights at `WH_LIGHT_FACE` surfaces and the warehouse’s `locklight` and `locklight2` indicator particles. The indicators follow their live particle colours; fixture strength and the white lights’ warm colour are approximations. There are no shadows or occlusion, and lights may pop or leak
-through walls. Reflective and transparent world geometry retains its original lighting. The scan and per-surface shader work add overhead.
-
-Set `ONI_WORLD_LIGHT=1` as well for weapon muzzle lights. Without the warehouse
-variable the original level lighting is retained. See `[warehouse-light]`
-in `startup.txt` for the number of detected proxies.
+Based on [eggplantredrage/Oni-Linux-](https://github.com/eggplantredrage/Oni-Linux-), which builds on [OniARM64](https://github.com/andiyar/OniARM64). See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for third-party notices.
