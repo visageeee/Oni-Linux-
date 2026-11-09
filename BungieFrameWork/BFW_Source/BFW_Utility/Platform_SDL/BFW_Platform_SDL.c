@@ -18,6 +18,7 @@ struct UUtInterruptProcRef
 	UUtInterruptProc	interruptProc;
 	void				*refCon;
 	SDL_TimerID			timer;
+	Uint32 interval_base, interval_remainder, interval_error, frequency;
 };
 
 static Uint32 UUiTimerProc(
@@ -25,7 +26,17 @@ static Uint32 UUiTimerProc(
 	void *param)
 {
 	UUtInterruptProcRef *interruptProcRef = param;
-	return interruptProcRef->interruptProc(interruptProcRef->refCon) ? interval : 0;
+	(void)interval;
+	if (!interruptProcRef->interruptProc(interruptProcRef->refCon)) return 0;
+	// SDL timers use integer milliseconds. Distribute the fractional part
+	// instead of sampling at 62.5 Hz when 60 Hz was requested.
+	Uint32 next = interruptProcRef->interval_base;
+	interruptProcRef->interval_error += interruptProcRef->interval_remainder;
+	if (interruptProcRef->interval_error >= interruptProcRef->frequency) {
+		interruptProcRef->interval_error -= interruptProcRef->frequency;
+		++next;
+	}
+	return next;
 }
 
 UUtError UUrInterruptProc_Install(
@@ -47,9 +58,15 @@ UUtError UUrInterruptProc_Install(
 
 	interruptProcRef->interruptProc = interruptProc;
 	interruptProcRef->refCon = refCon;
-	Uint32 interval = 1000 / tiggersPerSec;
-
-	interruptProcRef->timer = SDL_AddTimer(interval, UUiTimerProc, interruptProcRef);
+	if (tiggersPerSec <= 0 || tiggersPerSec > 1000) {
+		UUrMemory_Block_Delete(interruptProcRef);
+		return UUcError_Generic;
+	}
+	interruptProcRef->frequency = (Uint32)tiggersPerSec;
+	interruptProcRef->interval_base = 1000 / interruptProcRef->frequency;
+	interruptProcRef->interval_remainder = 1000 % interruptProcRef->frequency;
+	interruptProcRef->interval_error = interruptProcRef->interval_remainder;
+	interruptProcRef->timer = SDL_AddTimer(interruptProcRef->interval_base, UUiTimerProc, interruptProcRef);
 
 	if(interruptProcRef->timer == 0)
 	{

@@ -4646,6 +4646,25 @@ UUtError ONrGameState_Update(
 		#endif
 	#endif
 
+#if defined(__linux__) && UUmSDL
+	// SDL samples asynchronously. A render frame can receive zero or multiple
+	// samples even though the simulation advances on a separate 60 Hz clock.
+	// Preserve all relative mouse motion until it can be consumed by a tick.
+	static float pending_mouse_x = 0.0f, pending_mouse_y = 0.0f;
+	static UUtUns32 previous_game_time = 0;
+	if (ONgGameState->gameTime < previous_game_time || LIrMode_Get() != LIcMode_Game) {
+		pending_mouse_x = pending_mouse_y = 0.0f;
+	}
+	previous_game_time = ONgGameState->gameTime;
+	for (itr = 0; itr < numActionsInBuffer; ++itr) {
+		pending_mouse_x += actionBuffer[itr].analogValues[LIc_Aim_LR];
+		pending_mouse_y += actionBuffer[itr].analogValues[LIc_Aim_UD];
+	}
+	const float mouse_x_per_tick = deltaTicks ? pending_mouse_x / deltaTicks : 0.0f;
+	const float mouse_y_per_tick = deltaTicks ? pending_mouse_y / deltaTicks : 0.0f;
+	if (deltaTicks) pending_mouse_x = pending_mouse_y = 0.0f;
+#endif
+
 	// ** call the heartbeat
 	for(itr = 0; itr < deltaTicks; itr++)
 	{
@@ -4658,6 +4677,19 @@ UUtError ONrGameState_Update(
 			action = NULL;
 		}
 
+#if defined(__linux__) && UUmSDL
+		LItAction mouse_action;
+		if (action != NULL || mouse_x_per_tick != 0.0f || mouse_y_per_tick != 0.0f) {
+			if (action != NULL) mouse_action = *action;
+			else {
+				memset(&mouse_action, 0, sizeof(mouse_action));
+				mouse_action.buttonBits = ONgGameState->local.localInput.buttonIsDown;
+			}
+			mouse_action.analogValues[LIc_Aim_LR] = mouse_x_per_tick;
+			mouse_action.analogValues[LIc_Aim_UD] = mouse_y_per_tick;
+			action = &mouse_action;
+		}
+#endif
 		ONrGameState_ProcessHeartbeat(action);
 		CArUpdate(1, 0, NULL);
 

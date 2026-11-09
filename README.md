@@ -53,3 +53,36 @@ Binary lands at `build/bin/Oni`. Drop your `GameDataFolder` (PC or Mac retail, a
 - Original Source code used to port to linux
 - https://github.com/andiyar/OniARM64
 - 
+
+### Experimental Linux shader
+
+The existing renderer can optionally apply an OpenGL shader to the completed
+frame (including UI). From `build/bin`, run `ONI_SHADER=warm ./Oni` for a subtle
+warm colour grade, or `ONI_SHADER=neutral ./Oni` to check the passthrough path.
+Run `./Oni` without the variable for the original renderer. Shader compilation
+or resource failures fall back to the original frame; see `startup.txt` for
+`[shader]` diagnostics. This is a fullscreen post-process, not per-material
+lighting or a normal-map shader. It adds a full-resolution texture copy and draw.
+
+### Experimental per-pixel weapon lights (Linux)
+
+Run `ONI_WORLD_LIGHT=1 ./Oni` from `build/bin` to enable brief muzzle lights
+on opaque world geometry. The normal launch leaves them off. This experiment
+supports up to four recent shots at a time; transparent, environment-mapped,
+character and UI geometry keep their original lighting. It does not cast
+shadows, so light can pass through walls. It adds per-surface shader work and
+has not been performance tuned. `[world-light]` messages in `startup.txt`
+report shader activation or failure. It can be combined with `ONI_SHADER=warm`.
+
+### Experimental Syndicate warehouse relighting (Linux)
+
+From `build/bin`, run `ONI_WAREHOUSE_LIGHT=1 ./Oni` and load Syndicate
+Warehouse. This blends down the baked vertex colours on opaque world surfaces
+and adds up to eight nearby per-pixel fixture lights per surface. Characters use a separate per-vertex approximation of nearby lights. The level does not retain
+fixture light records in the tested data, so the experiment instead places
+proxy lights at `WH_LIGHT_FACE` surfaces and the warehouse’s `locklight` and `locklight2` indicator particles. The indicators follow their live particle colours; fixture strength and the white lights’ warm colour are approximations. There are no shadows or occlusion, and lights may pop or leak
+through walls. Reflective and transparent world geometry retains its original lighting. The scan and per-surface shader work add overhead.
+
+Set `ONI_WORLD_LIGHT=1` as well for weapon muzzle lights. Without the warehouse
+variable the original level lighting is retained. See `[warehouse-light]`
+in `startup.txt` for the number of detected proxies.

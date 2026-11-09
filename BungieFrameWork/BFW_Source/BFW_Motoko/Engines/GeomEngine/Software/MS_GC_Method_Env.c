@@ -29,6 +29,8 @@
 #include "BFW_Shared_Clip.h"
 
 #include "Akira_Private.h"
+#include "oni_world_light_sdl.h"
+#include "Oni_ExperimentalLights.h"
 
 extern UUtUns16		MSgLightMapMode;
 
@@ -233,6 +235,10 @@ MSrGeomContext_Method_Env_DrawGQList(
 		//UUmAssert(!(curGQGeneral->flags & AKcGQ_Flag_Transparent));
 	}
 
+#if defined(__linux__) && UUmSDL
+	OniExperimentalLight muzzleLights[ONI_MAX_EXPERIMENTAL_LIGHTS];
+	UUtUns32 muzzleLightCount=ONrExperimentalLights_Get(muzzleLights,ONI_MAX_EXPERIMENTAL_LIGHTS);
+#endif
 	// Transform all the vertices into frustum and screen
 
 	MSgGeomContextPrivate->activeFunctions->transformEnvPointListToFrustumScreenActive(
@@ -365,6 +371,24 @@ MSrGeomContext_Method_Env_DrawGQList(
 
 		M3rDraw_State_Commit();
 
+#if defined(__linux__) && UUmSDL
+		// Use the original projected polygon to reconstruct world positions.
+		// The same plane applies to triangles produced by the software clipper.
+		int lit = 0;
+		M3tTextureMap *worldLightMap = textureMapArray[curGQRender->textureMapIndex];
+		if ((muzzleLightCount || ONrExperimentalLights_WarehouseEnabled()) && !inTransparentList && worldLightMap && !worldLightMap->envMap) {
+			const UUtUns32 *idx=curGQGeneral->m3Quad.vertexIndices.indices;
+			if (ONrExperimentalLights_WarehouseEnabled()) {
+				M3tPoint3D center={(worldPoints[idx[0]].x+worldPoints[idx[1]].x+worldPoints[idx[2]].x)/3.f,
+					(worldPoints[idx[0]].y+worldPoints[idx[1]].y+worldPoints[idx[2]].y)/3.f,
+					(worldPoints[idx[0]].z+worldPoints[idx[1]].z+worldPoints[idx[2]].z)/3.f};
+				muzzleLightCount=ONrExperimentalLights_GetAt(&center,muzzleLights,ONI_MAX_EXPERIMENTAL_LIGHTS);
+			}
+			lit=oni_world_light_begin(&screenPoints[idx[0]],&screenPoints[idx[1]],&screenPoints[idx[2]],
+				&worldPoints[idx[0]],&worldPoints[idx[1]],&worldPoints[idx[2]],
+				muzzleLights,muzzleLightCount);
+		}
+#endif
 		if(clipCodeOR != 0)
 		{
 			M3tTriSplit tri;
@@ -442,6 +466,9 @@ MSrGeomContext_Method_Env_DrawGQList(
 		{
 			M3rDraw_Quad(&curGQGeneral->m3Quad);
 		}
+#if defined(__linux__) && UUmSDL
+		if (lit) oni_world_light_end();
+#endif
 	}
 
 	M3rDraw_State_Pop();

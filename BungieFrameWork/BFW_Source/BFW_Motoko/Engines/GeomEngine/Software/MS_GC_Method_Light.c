@@ -15,6 +15,9 @@
 
 #include "MS_GC_Private.h"
 #include "MS_GC_Method_Light.h"
+#if defined(__linux__) && UUmSDL
+#include "Oni_ExperimentalLights.h"
+#endif
 
 void
 MSrGeomContext_Method_LightList_Ambient(
@@ -43,6 +46,10 @@ MSrGeomContext_Method_LightList_Directional(
 		nx = inLightList[itr].direction.x;
 		ny = inLightList[itr].direction.y;
 		nz = inLightList[itr].direction.x;
+#if defined(__linux__) && UUmSDL
+        // Preserve the legacy path outside the opt-in experiment.
+        if (ONrExperimentalLights_WarehouseEnabled()) nz = inLightList[itr].direction.z;
+#endif
 
 		mag = MUrSqrt(nx * nx + ny * ny + nz * nz);
 

@@ -14,6 +14,7 @@
 #include "gl_resolution_curate.h"
 
 #include "SDL2/SDL_pixels.h"
+#include "oni_postprocess_sdl.h"
 
 void M3rSetGamma(
 	float inGamma)
@@ -225,7 +226,10 @@ UUtBool gl_platform_initialize(
 	{
 	#ifdef DESTROY_CONTEXTS_ON_DISPLAY_CHANGE // textures get mangled, but doesn't crash the game
 		// tear down current contexts & rebuild everything
-		success= SDL_GL_MakeCurrent(NULL, NULL) == 0;
+	#if defined(__linux__)
+	oni_post_dispose();
+#endif
+	success= SDL_GL_MakeCurrent(NULL, NULL) == 0;
 		if (!success)
 		{
 			UUrDebuggerMessage("SDL_GL_MakeCurrent() failed : %s", SDL_GetError());
@@ -316,6 +320,9 @@ void gl_platform_dispose(
 void gl_display_back_buffer(
 	void)
 {
+#if defined(__linux__)
+	oni_post_draw(ONgPlatformData.gameWindow);
+#endif
 	SDL_GL_SwapWindow(ONgPlatformData.gameWindow);
 
 	return;

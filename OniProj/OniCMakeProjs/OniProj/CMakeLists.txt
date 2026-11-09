@@ -488,7 +488,8 @@ set(SOURCE_FILES
         ../../OniGameSource/Oni_TextureMaterials.c
         ../../OniGameSource/Oni_TextureMaterials.h
         ../../OniGameSource/Oni_Weapon.c
-        ../../OniGameSource/Oni_Weapon.h)
+        ../../OniGameSource/Oni_Weapon.h
+        ../../OniGameSource/Oni_ExperimentalLights.h)
 
 if(Platform_SDL)
     find_package(PkgConfig)

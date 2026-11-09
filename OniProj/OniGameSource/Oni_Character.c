@@ -23,6 +23,7 @@
 #include "Oni_Character_Animation.h"
 #include "Oni_KeyBindings.h"
 #include "Oni_Weapon.h"
+#include "Oni_ExperimentalLights.h"
 #include "Oni_Particle3.h"
 #include "Oni_Sound_Animation.h"
 #include "Oni_ImpactEffect.h"
@@ -6028,6 +6029,34 @@ static void ONiCharacter_TempDebug_DrawAttackExtent(ONtCharacter *inCharacter)
 }
 #endif
 
+#if defined(__linux__) && UUmSDL
+// The character renderer shades vertices on the CPU. Approximate each nearby
+// point light with a directional light at the character, retaining its normal
+// response without changing model or animation geometry.
+static void ONiCharacter_WarehouseLighting(const ONtCharacter *character) {
+    OniExperimentalLight lights[ONI_MAX_EXPERIMENTAL_LIGHTS];
+    M3tPoint3D center=character->location; center.y+=8.f;
+    UUtUns32 count=ONrExperimentalLights_GetAt(&center,lights,ONI_MAX_EXPERIMENTAL_LIGHTS);
+    M3tLight_Ambient ambient; M3tLight_Directional directions[4]; UUtUns32 used=0;
+    ambient.color.r=ambient.color.g=ambient.color.b=0.25f;
+    for(UUtUns32 i=0;i<count && used<4;++i) {
+        float x=center.x-lights[i].position.x,y=center.y-lights[i].position.y,z=center.z-lights[i].position.z;
+        float distance=MUrSqrt(x*x+y*y+z*z);
+        if(distance<0.001f || distance>=lights[i].radius)continue;
+        float t=UUmPin((distance-6.f)/UUmMax(0.01f,lights[i].radius-6.f),0.f,1.f);
+        float falloff=1.f-t*t*(3.f-2.f*t);
+        float strength=0.9f*lights[i].intensity*falloff*falloff;
+        directions[used].direction.x=x/distance; directions[used].direction.y=y/distance; directions[used].direction.z=z/distance;
+        directions[used].color.r=UUmMax(0.f,lights[i].red)*strength;
+        directions[used].color.g=UUmMax(0.f,lights[i].green)*strength;
+        directions[used].color.b=UUmMax(0.f,lights[i].blue)*strength;
+        ++used;
+    }
+    M3rLightList_Ambient(&ambient);
+    M3rLightList_Directional(used,directions);
+}
+#endif
+
 static void ONiCharacter_Display_Body(
 					ONtCharacter *inCharacter,
 					ONtActiveCharacter *inActiveCharacter,
@@ -6124,8 +6153,14 @@ static void ONiCharacter_Display_Body(
 			UUmAssert(inCharacter->inventory.weapons[0] != NULL);
 		}
 #endif
+#if defined(__linux__) && UUmSDL
+        if (ONrExperimentalLights_WarehouseEnabled()) ONiCharacter_WarehouseLighting(inCharacter);
+#endif
 		TRrBody_Draw(body, gDrawWeapon ? inActiveCharacter->extraBody : NULL, inActiveCharacter->matricies, TRcBody_DrawAll,
 			inActiveCharacter->flash_parts, 0, 0, 0);
+#if defined(__linux__) && UUmSDL
+        if (ONrExperimentalLights_WarehouseEnabled()) ONrGameState_SetupDefaultLighting();
+#endif
 	}
 
 	if (inActiveCharacter->shield_active)
