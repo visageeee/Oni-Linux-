@@ -24,6 +24,7 @@
 #include "Oni_KeyBindings.h"
 #include "Oni_Weapon.h"
 #include "Oni_ExperimentalLights.h"
+#include "Oni_StencilShadows.h"
 #include "Oni_Particle3.h"
 #include "Oni_Sound_Animation.h"
 #include "Oni_ImpactEffect.h"
@@ -6210,6 +6211,9 @@ static void ONiCharacter_Display_Body(
 #endif
 #if defined(__linux__) && UUmSDL
         UUtBool experimentalLighting=ONiCharacter_ExperimentalLighting(inCharacter);
+        if(ONgCharacterShadow && ONrMotoko_GraphicsQuality_SupportShadows() &&
+           !(inCharacter->flags & ONcCharacterFlag_NoShadow) && alphaAmount>=0.99f)
+            ONrStencilShadows_Queue(inCharacter,body,inActiveCharacter->matricies,&inCharacter->location);
 #endif
 		TRrBody_Draw(body, gDrawWeapon ? inActiveCharacter->extraBody : NULL, inActiveCharacter->matricies, TRcBody_DrawAll,
 			inActiveCharacter->flash_parts, 0, 0, 0);
@@ -6688,7 +6692,14 @@ static void ONiCharacter_Display(
 	support_shadow = support_shadow && ((inCharacter->flags & ONcCharacterFlag_Dead_3_Cosmetic) == 0);
 	support_shadow = support_shadow && (character_alpha > 0);
 	support_shadow = support_shadow && (!(inCharacter->flags & ONcCharacterFlag_NoShadow));
-
+#if defined(__linux__) && UUmSDL
+    // Retire an existing decal as soon as this character has a stencil
+    // volume. Preserve the original fallback if no volume was queued.
+    if(ONrStencilShadows_Queued(inCharacter)) {
+        ONiCharacter_DeleteShadow(inActiveCharacter);
+        support_shadow=UUcFalse;
+    }
+#endif
 
 	if (support_shadow) {
 		M3tTextureMap *texture;

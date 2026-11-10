@@ -31,8 +31,14 @@
 #include "Akira_Private.h"
 #include "oni_world_light_sdl.h"
 #include "Oni_ExperimentalLights.h"
+#include "Oni_StencilShadows.h"
 
 extern UUtUns16		MSgLightMapMode;
+#if defined(__linux__) && UUmSDL
+UUtBool ONrStencilShadows_WorldShaderReady(void) {
+    return oni_world_light.context==SDL_GL_GetCurrentContext() && oni_world_light.program!=0;
+}
+#endif
 
 UUtError
 MSrGeomContext_Method_Env_SetCamera(
@@ -377,18 +383,33 @@ MSrGeomContext_Method_Env_DrawGQList(
 		// Use the original projected polygon to reconstruct world positions.
 		// The same plane applies to triangles produced by the software clipper.
 		int lit = 0;
+        UUtUns32 shadowPass=ONrStencilShadows_RenderPass();
 		M3tTextureMap *worldLightMap = textureMapArray[curGQRender->textureMapIndex];
-		if ((hasDynamicLights || ONrExperimentalLights_SceneEnabled()) && !inTransparentList && worldLightMap && !worldLightMap->envMap) {
+        // Do not repaint reflective, jello, or otherwise unsupported materials.
+        if(shadowPass && (inTransparentList || !worldLightMap || worldLightMap->envMap))continue;
+		if ((hasDynamicLights || ONrExperimentalLights_SceneEnabled() || shadowPass) && !inTransparentList && worldLightMap && !worldLightMap->envMap) {
 			const UUtUns32 *idx=curGQGeneral->m3Quad.vertexIndices.indices;
 			{
 				UUtUns32 count=(curGQGeneral->flags & AKcGQ_Flag_Triangle)?3:4;
 				M3tPoint3D vertices[4]={worldPoints[idx[0]],worldPoints[idx[1]],worldPoints[idx[2]],worldPoints[idx[count-1]]};
 				muzzleLightCount=ONrExperimentalLights_GetForSurface(vertices,count,muzzleLights,lightCapacity);
+                UUtUns32 included=ONrStencilShadows_MarkLights(muzzleLights,muzzleLightCount);
+                if(shadowPass==2 && !included)continue;
 			}
-			if (muzzleLightCount || ONrExperimentalLights_SceneEnabled()) lit=oni_world_light_begin(&screenPoints[idx[0]],&screenPoints[idx[1]],&screenPoints[idx[2]],
+			if (muzzleLightCount || ONrExperimentalLights_SceneEnabled() || shadowPass) lit=oni_world_light_begin(&screenPoints[idx[0]],&screenPoints[idx[1]],&screenPoints[idx[2]],
 				&worldPoints[idx[0]],&worldPoints[idx[1]],&worldPoints[idx[2]],
-				muzzleLights,muzzleLightCount);
+				muzzleLights,muzzleLightCount,shadowPass);
 		}
+        if(shadowPass) {
+            if(!lit)continue;
+            // The original opaque draw populated depth, including models.
+            // Repeat only identical visible fragments; never modify depth.
+            glEnable(GL_DEPTH_TEST);glDepthFunc(GL_EQUAL);glDepthMask(GL_FALSE);
+            glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_FALSE);
+            if(shadowPass==2) {glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE);
+                glEnable(GL_STENCIL_TEST);glStencilMask(0);glStencilFunc(GL_EQUAL,0,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);}
+            else {glDisable(GL_BLEND);glDisable(GL_STENCIL_TEST);}
+        }
 #endif
 		if(clipCodeOR != 0)
 		{

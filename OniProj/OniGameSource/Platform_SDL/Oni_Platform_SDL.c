@@ -60,6 +60,9 @@ ONiPlatform_CreateWindow(
 	UUrStartupMessage("[Window] creating SDL window with %s flag (useMetal=%d)",
 		(renderer_flag == SDL_WINDOW_METAL) ? "METAL" : "OPENGL", ONgCommandLine.useMetal);
 #endif
+#if defined(__linux__)
+	{ const char *shadow=getenv("ONI_STENCIL_SHADOWS"); if(shadow && !strcmp(shadow,"1")) SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8); }
+#endif
 	//TODO: SDL_WINDOW_FULLSCREEN?
 	ioPlatformData->gameWindow = SDL_CreateWindow(ONcMainWindowTitle, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, desktopMode.w, desktopMode.h, renderer_flag | SDL_WINDOW_SHOWN);
 

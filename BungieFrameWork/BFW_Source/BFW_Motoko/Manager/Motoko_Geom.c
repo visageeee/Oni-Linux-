@@ -478,6 +478,14 @@ M3rEnv_DrawGQList(
 	return error;
 }
 
+#if defined(__linux__) && UUmSDL
+/* Replay the already computed opaque visibility list without rebuilding it. */
+UUtError ONrStencilShadows_ReplayWorld(void) {
+    if(!M3gGeomContext || !M3gGeomGlobals.environment)return UUcError_Generic;
+    return (M3gGeomContext)->envDrawGQList(M3gGeomGlobals.numSolidGQs,M3gGeomGlobals.solidGQs,UUcFalse);
+}
+#endif
+
 void
 M3rGeom_Clear_Jello(
 	void)

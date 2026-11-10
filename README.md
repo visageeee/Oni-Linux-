@@ -8,6 +8,7 @@ A native Linux port of Bungie's 2001 game *Oni*, forked from [Oni-Linux-](https:
 - Optional OpenGL colour grading and distance fog.
 - Experimental dynamic lighting across gameplay levels, including supported fixtures, door indicators, fire and vehicle lights. Police beacons cast rotating red and orange light.
 - Experimental lights for muzzle flashes and supported weapon projectiles.
+- Optional experimental stencil shadow volumes cast by animated characters.
 
 These graphics features are opt-in, require the Linux SDL/OpenGL renderer, and do not modify game assets.
 
@@ -19,6 +20,16 @@ ONI_RELIGHT=1 ONI_WORLD_LIGHT=1 ./Oni
 
 Use either variable on its own to enable just that group. The world renderer supports up to 16 lights per surface on capable GPUs, with an eight-light fallback. Characters use approximate per-vertex lighting. Light sources and wall occlusion are approximations, not shadow maps; reflective and transparent surfaces retain their original lighting. The extra lighting adds rendering work and has not been performance tuned.
 
+To also enable experimental character stencil shadows:
+
+```bash
+ONI_RELIGHT=1 ONI_WORLD_LIGHT=1 ONI_STENCIL_SHADOWS=1 ./Oni
+```
+
+The pass uses the animated character mesh and up to two nearby lights per character, with up to four distinct shadow-casting light sources per frame. Selected lights are rendered separately through their stencil masks on opaque world surfaces. Character lighting, other models, and reflective or transparent materials use their existing paths. When no suitable light is available, a short overhead contact shadow darkens the composite instead.
+
+Stencil shadows require an 8-bit stencil buffer, depth clamp and separate stencil operations. The original blob remains if stencil support is unavailable or a character cannot be queued. The extra passes can be expensive, and the feature is still experimental.
+
 Enable optional distance fog with `ONI_DISTANCE_FOG=1`. `ONI_FOG_START` and `ONI_FOG_END` set distances in world units; `ONI_FOG_STRENGTH` ranges from 0 to 1. Fog includes the skybox and is applied before the HUD.
 
 For optional full-screen colour grading, including the UI:
@@ -27,7 +38,7 @@ For optional full-screen colour grading, including the UI:
 ONI_SHADER=warm ./Oni
 ```
 
-`ONI_SHADER=neutral` selects a passthrough shader. If a shader cannot be initialized, the game falls back to the original rendering path. Check `startup.txt` for `[shader]`, `[world-light]` and `[scene-light]` diagnostics.
+`ONI_SHADER=neutral` selects a passthrough shader. If a shader cannot be initialized, the game falls back to the original rendering path. Check `startup.txt` for `[shader]`, `[world-light]`, `[scene-light]` and `[stencil-shadow]` diagnostics.
 
 The frame limiter is enabled by default. Set `ONI_FPS_CAP=0` to disable it for comparison. See [HISTORY.md](HISTORY.md) for upstream changes.
 

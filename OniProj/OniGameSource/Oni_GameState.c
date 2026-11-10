@@ -42,6 +42,7 @@
 #include "Oni_GameState.h"
 #include "Oni_GameStatePrivate.h"
 #include "Oni_Character.h"
+#include "Oni_StencilShadows.h"
 #include "Oni_Camera.h"
 #include "Oni_Aiming.h"
 #include "Oni_Motoko.h"
@@ -5345,6 +5346,11 @@ ONiGameState_Display_Reflectable(
 	UUrStallTimer_End(&reflectable_internal, "ONiGameState_Display_Reflectable - WPrDisplay");
 	if (refl_log) UUrStartupMessage("[REFL] post WPrDisplay");
 
+#if defined(__linux__) && UUmSDL
+    // Opaque world and models have populated depth; decals and particles
+    // must be drawn after the light replays rather than overwritten by them.
+    if(ONgShow_Environment)ONrStencilShadows_Draw();
+#endif
 	// Draw the effects
 	#if defined(BRENTS_CHEESY_GSD_PERF) && BRENTS_CHEESY_GSD_PERF
 	ioPerfVars->time_prt -= UUrMachineTime_High();
@@ -5456,6 +5462,9 @@ void ONrGameState_Display(void)
 	M3rDraw_State_SetInt(M3cDrawStateIntType_ClearColor, ONgMotoko_ClearColor);
 	M3rGeom_State_Commit();
 
+#if defined(__linux__) && UUmSDL
+	ONrStencilShadows_Begin();
+#endif
 	// main drawing
 	{
 		extern void TMrAKOT_TripwireCheck(const char* where);
