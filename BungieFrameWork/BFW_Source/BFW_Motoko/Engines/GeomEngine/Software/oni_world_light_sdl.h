@@ -8,13 +8,15 @@
 #include <SDL2/SDL_opengl_glext.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct OniWorldLight {
  SDL_GLContext context;
  int attempted;
+ UUtUns32 capacity;
  GLuint program;
- GLint oldProgram, screen0, screen1, screen2, invw, world0, world1, world2, lights, lightColors, lightCount, relight, fogEnabled, fogMode;
+ GLint oldProgram, screen0, screen1, screen2, invw, world0, world1, world2, lights, lightColors, lightCount, relight, animationTime, fogEnabled, fogMode;
  PFNGLCREATESHADERPROC createShader;
  PFNGLSHADERSOURCEPROC shaderSource;
  PFNGLCOMPILESHADERPROC compileShader;
@@ -47,10 +49,38 @@ static GLuint oni_world_light_shader(GLenum type,const char *source){
   oni_world_light.deleteShader(s);return 0;}
  return s;
 }
+// Choose a bounded GLSL light array once per context. Older implementations
+// may expose too few fragment uniform components for the larger variant.
+static UUtUns32 oni_world_light_capacity(void) {
+ SDL_GLContext context=SDL_GL_GetCurrentContext();
+ if(!context)return 8;
+ if(oni_world_light.context!=context){memset(&oni_world_light,0,sizeof(oni_world_light));oni_world_light.context=context;}
+ if(!oni_world_light.capacity){
+  GLint components=0;glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,&components);
+  oni_world_light.capacity=components>=192?ONI_MAX_EXPERIMENTAL_LIGHTS:8;
+ }
+ return oni_world_light.capacity;
+}
+static int oni_world_light_try_program(UUtUns32 capacity,const char *vertex,const char *fragmentBody) {
+ char fragment[4096];
+ int length=snprintf(fragment,sizeof(fragment),"#version 120\n#define ONI_LIGHT_COUNT %u\n%s",(unsigned)capacity,fragmentBody);
+ if(length<0 || (size_t)length>=sizeof(fragment))return 0;
+ GLuint vs=oni_world_light_shader(GL_VERTEX_SHADER,vertex),fs=oni_world_light_shader(GL_FRAGMENT_SHADER,fragment);
+ if(!vs || !fs){if(vs)oni_world_light.deleteShader(vs);if(fs)oni_world_light.deleteShader(fs);return 0;}
+ GLuint program=oni_world_light.createProgram();
+ if(!program){oni_world_light.deleteShader(vs);oni_world_light.deleteShader(fs);return 0;}
+ oni_world_light.attachShader(program,vs);oni_world_light.attachShader(program,fs);
+ oni_world_light.linkProgram(program);oni_world_light.deleteShader(vs);oni_world_light.deleteShader(fs);
+ GLint ok=0;oni_world_light.getProgramiv(program,GL_LINK_STATUS,&ok);
+ if(!ok){char log[1024]={0};oni_world_light.getProgramInfoLog(program,sizeof(log),NULL,log);
+  UUrStartupMessage("[world-light] %u-light shader link failed: %s",(unsigned)capacity,log);
+  oni_world_light.deleteProgram(program);return 0;}
+ oni_world_light.program=program;return 1;
+}
 static int oni_world_light_init(void){
  const char *setting=getenv("ONI_WORLD_LIGHT");
- const char *warehouse=getenv("ONI_WAREHOUSE_LIGHT");
- if((!setting || strcmp(setting,"1")) && (!warehouse || strcmp(warehouse,"1")))return 0;
+ const char *warehouse=getenv("ONI_WAREHOUSE_LIGHT"), *relight=getenv("ONI_RELIGHT");
+ if((!setting || strcmp(setting,"1")) && (!warehouse || strcmp(warehouse,"1")) && (!relight || strcmp(relight,"1")))return 0;
 #define LOAD_GL(field,type,name) do { oni_world_light.field=(type)SDL_GL_GetProcAddress(name); \
  if(!oni_world_light.field){UUrStartupMessage("[world-light] %s unavailable",name);return 0;} }while(0)
  LOAD_GL(createShader,PFNGLCREATESHADERPROC,"glCreateShader");
@@ -78,44 +108,47 @@ static int oni_world_light_init(void){
   "varying vec2 screen;varying vec4 uv;varying vec4 colour;varying float fogDepth;\n"
   "void main(){gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex;screen=gl_Vertex.xy;"
   "uv=gl_TextureMatrix[0]*gl_MultiTexCoord0;colour=gl_Color;fogDepth=abs((gl_ModelViewMatrix*gl_Vertex).z);}\n";
- const char *fragment=
-  "#version 120\n"
-  "uniform sampler2D base;uniform vec2 s0,s1,s2;uniform vec3 invw,p0,p1,p2;uniform vec4 lights[8];uniform vec4 lightColors[8];uniform int lightCount;uniform float relight;"
-  "uniform int fogEnabled,fogMode;varying vec2 screen;varying vec4 uv;varying vec4 colour;varying float fogDepth;\n"
+ const char *fragmentBody=
+  "uniform sampler2D base;uniform vec2 s0,s1,s2;uniform vec3 invw,p0,p1,p2;uniform vec4 lights[ONI_LIGHT_COUNT];uniform vec4 lightColors[ONI_LIGHT_COUNT];uniform int lightCount;uniform float relight;"
+  "uniform int fogEnabled,fogMode;uniform float animationTime;varying vec2 screen;varying vec4 uv;varying vec4 colour;varying float fogDepth;\n"
   "void main(){vec2 a=s1-s0,b=s2-s0,c=screen-s0;float det=a.x*b.y-a.y*b.x;"
   "float y=(c.x*b.y-c.y*b.x)/det,z=(a.x*c.y-a.y*c.x)/det;"
   "vec3 w=vec3(1.0-y-z,y,z)*invw;float sum=w.x+w.y+w.z;"
   "vec4 sample=texture2DProj(base,uv);vec4 tex=sample*colour;tex.rgb=sample.rgb*mix(colour.rgb,colour.rgb*0.40+vec3(0.08),relight);"
   "if(abs(sum)>0.000001){vec3 pos=(p0*w.x+p1*w.y+p2*w.z)/sum;"
   "vec3 rawN=cross(p1-p0,p2-p0);float nlen=length(rawN);vec3 amount=vec3(0.0);"
-  "if(nlen>0.00001){vec3 normal=rawN/nlen;for(int i=0;i<8;++i){if(i>=lightCount)break;"
+  "if(nlen>0.00001){vec3 normal=rawN/nlen;for(int i=0;i<ONI_LIGHT_COUNT;++i){if(i>=lightCount)break;"
   "vec3 delta=lights[i].xyz-pos;float d=length(delta);if(d>0.00001){"
-  "float facing=abs(dot(normal,delta/d));float falloff=1.0-smoothstep(6.0,max(6.01,lightColors[i].a),d);"
-  "amount+=2.0*lights[i].w*facing*falloff*falloff*lightColors[i].rgb;}}}"
-  "tex.rgb=clamp(tex.rgb+sample.rgb*amount*mix(colour.rgb,vec3(0.70),relight),0.0,1.0);}"
+  "float radius=abs(lightColors[i].a);float beam=1.0;"
+  "if(lightColors[i].a<0.0){float phase=dot(lights[i].xyz,vec3(.013,.017,.019));float angle=animationTime*2.6+phase+(lightColors[i].g>0.25?3.14159265:0.0);"
+  "vec3 dir=vec3(cos(angle),0.0,sin(angle));beam=0.03+0.97*smoothstep(0.05,0.70,dot(-delta/d,dir));}"
+  "float facing=abs(dot(normal,delta/d));float falloff=1.0-smoothstep(6.0,max(6.01,radius),d);"
+  "amount+=2.0*lights[i].w*facing*falloff*falloff*beam*lightColors[i].rgb;}}}"
+  "vec3 added=sample.rgb*amount*mix(colour.rgb,vec3(0.70),relight);"
+  "vec3 headroom=max(vec3(1.0)-tex.rgb,vec3(0.001));vec3 ratios=added/headroom;"
+  "float peak=max(ratios.r,max(ratios.g,ratios.b));"
+  "if(peak>0.5){float soft=0.5+0.45*(1.0-exp(-(peak-0.5)/0.45));added*=soft/peak;}"
+  "tex.rgb=clamp(tex.rgb+added,0.0,1.0);}"
   "if(fogEnabled!=0){float f=1.0;if(fogMode==2048)f=exp(-gl_Fog.density*fogDepth);"
   "else if(fogMode==2049){float d=gl_Fog.density*fogDepth;f=exp(-d*d);}"
   "else f=(gl_Fog.end-fogDepth)/max(gl_Fog.end-gl_Fog.start,0.00001);"
   "tex.rgb=mix(gl_Fog.color.rgb,tex.rgb,clamp(f,0.0,1.0));}gl_FragColor=tex;}\n";
- GLuint vs=oni_world_light_shader(GL_VERTEX_SHADER,vertex),fs=oni_world_light_shader(GL_FRAGMENT_SHADER,fragment);
- if(!vs || !fs){if(vs)oni_world_light.deleteShader(vs);if(fs)oni_world_light.deleteShader(fs);return 0;}
- oni_world_light.program=oni_world_light.createProgram();
- if(!oni_world_light.program){oni_world_light.deleteShader(vs);oni_world_light.deleteShader(fs);return 0;}
- oni_world_light.attachShader(oni_world_light.program,vs);oni_world_light.attachShader(oni_world_light.program,fs);
- oni_world_light.linkProgram(oni_world_light.program);oni_world_light.deleteShader(vs);oni_world_light.deleteShader(fs);
- GLint ok=0;oni_world_light.getProgramiv(oni_world_light.program,GL_LINK_STATUS,&ok);
- if(!ok){char log[1024]={0};oni_world_light.getProgramInfoLog(oni_world_light.program,sizeof(log),NULL,log);
-  UUrStartupMessage("[world-light] shader link failed: %s",log);
-  oni_world_light.deleteProgram(oni_world_light.program);oni_world_light.program=0;return 0;}
+ UUtUns32 capacity=oni_world_light_capacity();
+ if(!oni_world_light_try_program(capacity,vertex,fragmentBody)) {
+  if(capacity<=8)return 0;
+  UUrStartupMessage("[world-light] falling back to 8 lights per surface");
+  oni_world_light.capacity=capacity=8;
+  if(!oni_world_light_try_program(capacity,vertex,fragmentBody))return 0;
+ }
 #define LOC(name) oni_world_light.uniformLocation(oni_world_light.program,name)
  oni_world_light.screen0=LOC("s0");oni_world_light.screen1=LOC("s1");oni_world_light.screen2=LOC("s2");
  oni_world_light.invw=LOC("invw");oni_world_light.world0=LOC("p0");oni_world_light.world1=LOC("p1");
  oni_world_light.world2=LOC("p2");oni_world_light.lights=LOC("lights[0]");oni_world_light.lightColors=LOC("lightColors[0]");oni_world_light.relight=LOC("relight");oni_world_light.lightCount=LOC("lightCount");oni_world_light.fogEnabled=LOC("fogEnabled");
- oni_world_light.fogMode=LOC("fogMode");
+ oni_world_light.fogMode=LOC("fogMode");oni_world_light.animationTime=LOC("animationTime");
  GLint old=0;glGetIntegerv(GL_CURRENT_PROGRAM,&old);oni_world_light.useProgram(oni_world_light.program);
  oni_world_light.uniform1i(LOC("base"),0);oni_world_light.useProgram((GLuint)old);
 #undef LOC
- UUrStartupMessage("[world-light] experimental weapon lights enabled (opaque world surfaces)");
+ UUrStartupMessage("[world-light] experimental lighting enabled (up to %u lights per surface)",(unsigned)oni_world_light.capacity);
  return 1;
 }
 static int oni_world_light_begin(const M3tPointScreen *s0,const M3tPointScreen *s1,const M3tPointScreen *s2,
@@ -143,14 +176,15 @@ static int oni_world_light_begin(const M3tPointScreen *s0,const M3tPointScreen *
  oni_world_light.uniform3f(oni_world_light.world1,p1->x,p1->y,p1->z);
  oni_world_light.uniform3f(oni_world_light.world2,p2->x,p2->y,p2->z);
  GLfloat packed[ONI_MAX_EXPERIMENTAL_LIGHTS*4]={0}, colors[ONI_MAX_EXPERIMENTAL_LIGHTS*4]={0};
- if(lightCount>ONI_MAX_EXPERIMENTAL_LIGHTS)lightCount=ONI_MAX_EXPERIMENTAL_LIGHTS;
+ if(lightCount>oni_world_light.capacity)lightCount=oni_world_light.capacity;
  for(UUtUns32 i=0;i<lightCount;++i){packed[i*4]=lights[i].position.x;packed[i*4+1]=lights[i].position.y;
   packed[i*4+2]=lights[i].position.z;packed[i*4+3]=lights[i].intensity;
-  colors[i*4]=lights[i].red;colors[i*4+1]=lights[i].green;colors[i*4+2]=lights[i].blue;colors[i*4+3]=lights[i].radius;}
+  colors[i*4]=lights[i].red;colors[i*4+1]=lights[i].green;colors[i*4+2]=lights[i].blue;colors[i*4+3]=lights[i].spinning?-lights[i].radius:lights[i].radius;}
+ oni_world_light.uniform1f(oni_world_light.animationTime,ONrExperimentalLights_AnimationTime());
  oni_world_light.uniform1i(oni_world_light.lightCount,(GLint)lightCount);
  oni_world_light.uniform4fv(oni_world_light.lights,(GLsizei)lightCount,packed);
  oni_world_light.uniform4fv(oni_world_light.lightColors,(GLsizei)lightCount,colors);
- oni_world_light.uniform1f(oni_world_light.relight,ONrExperimentalLights_WarehouseEnabled()?1.0f:0.0f);
+ oni_world_light.uniform1f(oni_world_light.relight,ONrExperimentalLights_SceneEnabled()?1.0f:0.0f);
  oni_world_light.uniform1i(oni_world_light.fogEnabled,glIsEnabled(GL_FOG)?1:0);
  glGetIntegerv(GL_FOG_MODE,&mode);oni_world_light.uniform1i(oni_world_light.fogMode,mode);
  return 1;

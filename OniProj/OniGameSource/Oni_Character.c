@@ -6033,27 +6033,82 @@ static void ONiCharacter_TempDebug_DrawAttackExtent(ONtCharacter *inCharacter)
 // The character renderer shades vertices on the CPU. Approximate each nearby
 // point light with a directional light at the character, retaining its normal
 // response without changing model or animation geometry.
-static void ONiCharacter_WarehouseLighting(const ONtCharacter *character) {
+static UUtBool ONiCharacter_ExperimentalLighting(const ONtCharacter *character) {
+    UUtBool warehouse=ONrExperimentalLights_SceneEnabled();
+    if (!warehouse && !ONrExperimentalLights_WeaponEnabled()) return UUcFalse;
     OniExperimentalLight lights[ONI_MAX_EXPERIMENTAL_LIGHTS];
     M3tPoint3D center=character->location; center.y+=8.f;
     UUtUns32 count=ONrExperimentalLights_GetAt(&center,lights,ONI_MAX_EXPERIMENTAL_LIGHTS);
     M3tLight_Ambient ambient; M3tLight_Directional directions[4]; UUtUns32 used=0;
-    ambient.color.r=ambient.color.g=ambient.color.b=0.25f;
-    for(UUtUns32 i=0;i<count && used<4;++i) {
+    UUtInt32 baseline=0;
+    if (warehouse) {
+        ambient.color.r=ambient.color.g=ambient.color.b=0.25f;
+    } else {
+        baseline=UUmPin(ONrMotoko_GraphicsQuality_NumDirectionalLights(),0,2);
+        float flat=baseline>=2?0.55f:(baseline>=1?0.65f:0.85f);
+        ambient.color.r=ambient.color.g=ambient.color.b=flat;
+        if(baseline>=1) {
+            directions[used].direction.x=-0.5f;directions[used].direction.y=-1.f;directions[used].direction.z=-0.5f;
+            directions[used].color.r=directions[used].color.g=directions[used].color.b=0.7f;++used;
+        }
+        if(baseline>=2) {
+            directions[used].direction.x=0.5f;directions[used].direction.y=0.5f;directions[used].direction.z=1.f;
+            directions[used].color.r=directions[used].color.g=directions[used].color.b=0.3f;++used;
+        }
+    }
+    // Select by actual contribution, rather than letting dim or out-of-beam
+    // lights consume the four directional-light slots before brighter ones.
+    M3tLight_Directional candidates[ONI_MAX_EXPERIMENTAL_LIGHTS];
+    float candidateStrength[ONI_MAX_EXPERIMENTAL_LIGHTS];UUtUns32 candidatesUsed=0;
+    for(UUtUns32 i=0;i<count;++i) {
         float x=center.x-lights[i].position.x,y=center.y-lights[i].position.y,z=center.z-lights[i].position.z;
         float distance=MUrSqrt(x*x+y*y+z*z);
         if(distance<0.001f || distance>=lights[i].radius)continue;
         float t=UUmPin((distance-6.f)/UUmMax(0.01f,lights[i].radius-6.f),0.f,1.f);
         float falloff=1.f-t*t*(3.f-2.f*t);
-        float strength=0.9f*lights[i].intensity*falloff*falloff;
-        directions[used].direction.x=x/distance; directions[used].direction.y=y/distance; directions[used].direction.z=z/distance;
-        directions[used].color.r=UUmMax(0.f,lights[i].red)*strength;
-        directions[used].color.g=UUmMax(0.f,lights[i].green)*strength;
-        directions[used].color.b=UUmMax(0.f,lights[i].blue)*strength;
-        ++used;
+        // Match the world shader's point-light gain before the character's
+        // per-vertex directional approximation and overlap limit.
+        float strength=2.f*lights[i].intensity*falloff*falloff;
+        if(lights[i].spinning) {
+            float phase=lights[i].position.x*.013f+lights[i].position.y*.017f+lights[i].position.z*.019f;
+            float angle=ONrExperimentalLights_AnimationTime()*2.6f+phase+(lights[i].green>0.25f?3.14159265f:0.f);
+            float dot=(x*cosf(angle)+z*sinf(angle))/distance;
+            float t=UUmPin((dot-0.05f)/0.65f,0.f,1.f);
+            strength*=0.03f+0.97f*t*t*(3.f-2.f*t);
+        }
+        float priority=strength*UUmMax(lights[i].red,UUmMax(lights[i].green,lights[i].blue));
+        if(priority<0.001f)continue;
+        UUtUns32 at=0;while(at<candidatesUsed && candidateStrength[at]>=priority)++at;
+        for(UUtUns32 j=candidatesUsed;j>at;--j){candidates[j]=candidates[j-1];candidateStrength[j]=candidateStrength[j-1];}
+        ++candidatesUsed;candidateStrength[at]=priority;
+        candidates[at].direction.x=x/distance;candidates[at].direction.y=y/distance;candidates[at].direction.z=z/distance;
+        candidates[at].color.r=UUmMax(0.f,lights[i].red)*strength;
+        candidates[at].color.g=UUmMax(0.f,lights[i].green)*strength;
+        candidates[at].color.b=UUmMax(0.f,lights[i].blue)*strength;
+    }
+    for(UUtUns32 i=0;i<candidatesUsed && used<4;++i)directions[used++]=candidates[i];
+    if(!warehouse && used==(UUtUns32)baseline) return UUcFalse;
+    // Scale overlapping experimental lights together, preserving their colour
+    // balance while leaving the normal ambient and directional lights alone.
+    float sumR=0.f,sumG=0.f,sumB=0.f;
+    for(UUtUns32 i=(UUtUns32)baseline;i<used;++i) {
+        sumR+=directions[i].color.r;sumG+=directions[i].color.g;sumB+=directions[i].color.b;
+    }
+    float peak=UUmMax(sumR,UUmMax(sumG,sumB));
+    if(peak>0.5f) {
+        float soft=0.5f+0.45f*(1.f-expf(-(peak-0.5f)/0.45f));
+        float scale=soft/peak;
+        for(UUtUns32 i=(UUtUns32)baseline;i<used;++i) {
+            directions[i].color.r*=scale;directions[i].color.g*=scale;directions[i].color.b*=scale;
+        }
     }
     M3rLightList_Ambient(&ambient);
+    // The old software path otherwise copies x into z. Restrict the correction
+    // to these temporary experimental lights; retain the normal renderer state.
+    ONrExperimentalLights_SetCorrectDirection(UUcTrue);
     M3rLightList_Directional(used,directions);
+    ONrExperimentalLights_SetCorrectDirection(UUcFalse);
+    return UUcTrue;
 }
 #endif
 
@@ -6154,12 +6209,12 @@ static void ONiCharacter_Display_Body(
 		}
 #endif
 #if defined(__linux__) && UUmSDL
-        if (ONrExperimentalLights_WarehouseEnabled()) ONiCharacter_WarehouseLighting(inCharacter);
+        UUtBool experimentalLighting=ONiCharacter_ExperimentalLighting(inCharacter);
 #endif
 		TRrBody_Draw(body, gDrawWeapon ? inActiveCharacter->extraBody : NULL, inActiveCharacter->matricies, TRcBody_DrawAll,
 			inActiveCharacter->flash_parts, 0, 0, 0);
 #if defined(__linux__) && UUmSDL
-        if (ONrExperimentalLights_WarehouseEnabled()) ONrGameState_SetupDefaultLighting();
+        if (experimentalLighting) ONrGameState_SetupDefaultLighting();
 #endif
 	}
 

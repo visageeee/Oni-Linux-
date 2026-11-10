@@ -15,6 +15,11 @@
 
 #include "SDL2/SDL_pixels.h"
 #include "oni_postprocess_sdl.h"
+#include "oni_distance_fog_sdl.h"
+
+#if defined(__linux__) && UUmSDL
+void ONrExperimentalFog_Draw(float near_plane, float far_plane) { oni_fog_draw(near_plane,far_plane); }
+#endif
 
 void M3rSetGamma(
 	float inGamma)
@@ -228,6 +233,7 @@ UUtBool gl_platform_initialize(
 		// tear down current contexts & rebuild everything
 	#if defined(__linux__)
 	oni_post_dispose();
+	oni_fog_dispose();
 #endif
 	success= SDL_GL_MakeCurrent(NULL, NULL) == 0;
 		if (!success)
@@ -304,7 +310,9 @@ void gl_platform_dispose(
 {
 	int screen_width, screen_height;
 	UUtBool success;
-
+#if defined(__linux__) && UUmSDL
+	if (SDL_GL_GetCurrentContext()) { oni_fog_dispose(); oni_post_dispose(); }
+#endif
 	success= SDL_GL_MakeCurrent(NULL, NULL) == 0;
 	UUmAssert(success);
 

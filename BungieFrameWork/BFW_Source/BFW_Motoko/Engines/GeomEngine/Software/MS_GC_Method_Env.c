@@ -237,7 +237,9 @@ MSrGeomContext_Method_Env_DrawGQList(
 
 #if defined(__linux__) && UUmSDL
 	OniExperimentalLight muzzleLights[ONI_MAX_EXPERIMENTAL_LIGHTS];
-	UUtUns32 muzzleLightCount=ONrExperimentalLights_Get(muzzleLights,ONI_MAX_EXPERIMENTAL_LIGHTS);
+	UUtUns32 lightCapacity=oni_world_light_capacity();
+	UUtUns32 muzzleLightCount=ONrExperimentalLights_Get(muzzleLights,lightCapacity);
+	UUtBool hasDynamicLights=(muzzleLightCount>0);
 #endif
 	// Transform all the vertices into frustum and screen
 
@@ -376,15 +378,14 @@ MSrGeomContext_Method_Env_DrawGQList(
 		// The same plane applies to triangles produced by the software clipper.
 		int lit = 0;
 		M3tTextureMap *worldLightMap = textureMapArray[curGQRender->textureMapIndex];
-		if ((muzzleLightCount || ONrExperimentalLights_WarehouseEnabled()) && !inTransparentList && worldLightMap && !worldLightMap->envMap) {
+		if ((hasDynamicLights || ONrExperimentalLights_SceneEnabled()) && !inTransparentList && worldLightMap && !worldLightMap->envMap) {
 			const UUtUns32 *idx=curGQGeneral->m3Quad.vertexIndices.indices;
-			if (ONrExperimentalLights_WarehouseEnabled()) {
-				M3tPoint3D center={(worldPoints[idx[0]].x+worldPoints[idx[1]].x+worldPoints[idx[2]].x)/3.f,
-					(worldPoints[idx[0]].y+worldPoints[idx[1]].y+worldPoints[idx[2]].y)/3.f,
-					(worldPoints[idx[0]].z+worldPoints[idx[1]].z+worldPoints[idx[2]].z)/3.f};
-				muzzleLightCount=ONrExperimentalLights_GetAt(&center,muzzleLights,ONI_MAX_EXPERIMENTAL_LIGHTS);
+			{
+				UUtUns32 count=(curGQGeneral->flags & AKcGQ_Flag_Triangle)?3:4;
+				M3tPoint3D vertices[4]={worldPoints[idx[0]],worldPoints[idx[1]],worldPoints[idx[2]],worldPoints[idx[count-1]]};
+				muzzleLightCount=ONrExperimentalLights_GetForSurface(vertices,count,muzzleLights,lightCapacity);
 			}
-			lit=oni_world_light_begin(&screenPoints[idx[0]],&screenPoints[idx[1]],&screenPoints[idx[2]],
+			if (muzzleLightCount || ONrExperimentalLights_SceneEnabled()) lit=oni_world_light_begin(&screenPoints[idx[0]],&screenPoints[idx[1]],&screenPoints[idx[2]],
 				&worldPoints[idx[0]],&worldPoints[idx[1]],&worldPoints[idx[2]],
 				muzzleLights,muzzleLightCount);
 		}

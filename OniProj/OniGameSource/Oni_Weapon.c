@@ -1765,6 +1765,11 @@ static UUtBool ONiExperimentalLights_Enabled(void) {
     if(enabled<0){const char *v=getenv("ONI_WORLD_LIGHT");enabled=(v && !strcmp(v,"1"));}
     return (UUtBool)enabled;
 }
+float ONrExperimentalLights_AnimationTime(void) { return ONgGameState ? (float)ONrGameState_GetGameTime()/60.f : 0.f; }
+UUtBool ONrExperimentalLights_WeaponEnabled(void) { return ONiExperimentalLights_Enabled(); }
+static UUtBool oniExperimentalCorrectDirection;
+UUtBool ONrExperimentalLights_CorrectDirection(void) { return oniExperimentalCorrectDirection; }
+void ONrExperimentalLights_SetCorrectDirection(UUtBool enabled) { oniExperimentalCorrectDirection=enabled; }
 // This experiment uses surviving object lights, not guessed emissive textures.
 #define ONI_MAX_WAREHOUSE_FIXTURES 2048
 static OniExperimentalLight oniWarehouseFixtures[ONI_MAX_WAREHOUSE_FIXTURES];
@@ -1774,6 +1779,23 @@ static UUtBool oniWarehouseScanned;
 static OniExperimentalLight oniIndicatorLights[ONI_MAX_INDICATOR_LIGHTS];
 static UUtUns32 oniIndicatorCount, oniIndicatorTick;
 static UUtBool oniIndicatorTickValid, oniIndicatorLogged;
+#define ONI_MAX_EXTRA_CORONAS 512
+#define ONI_CORONA_CELL_CACHE 1024
+typedef struct OniCoronaCell { UUtBool valid; UUtUns32 tick,count,indices[6]; int x,y,z; } OniCoronaCell;
+static OniCoronaCell oniCoronaCells[ONI_CORONA_CELL_CACHE];
+static OniExperimentalLight oniExtraCoronas[ONI_MAX_EXTRA_CORONAS];
+static UUtBool oniExtraVehicle[ONI_MAX_EXTRA_CORONAS];
+static UUtUns32 oniExtraCoronaCount;
+static UUtBool oniExtraCoronaLogged;
+#define ONI_MAX_FIRE_LIGHTS 128
+static OniExperimentalLight oniFireLights[ONI_MAX_FIRE_LIGHTS];
+static UUtUns32 oniFireCount;
+static UUtBool oniFireLogged;
+#define ONI_MAX_PROJECTILE_LIGHTS 128
+static OniExperimentalLight oniProjectileLights[ONI_MAX_PROJECTILE_LIGHTS];
+static UUtUns32 oniProjectileCount, oniProjectileTick;
+static UUtBool oniProjectileTickValid, oniProjectileLogged;
+
 #define ONI_LIGHT_CELL_CACHE 2048
 typedef struct OniLightCell {
     UUtBool valid;
@@ -1781,10 +1803,20 @@ typedef struct OniLightCell {
     UUtUns32 count, indices[ONI_MAX_EXPERIMENTAL_LIGHTS];
 } OniLightCell;
 static OniLightCell oniLightCells[ONI_LIGHT_CELL_CACHE];
-UUtBool ONrExperimentalLights_WarehouseEnabled(void) {
+#define ONI_OCCLUSION_CACHE_SIZE 32768
+typedef struct OniOcclusionEntry {
+    UUtBool valid, blocked, vehicle;
+    UUtInt32 source[3], target[3];
+    UUtUns32 tick;
+} OniOcclusionEntry;
+static OniOcclusionEntry oniOcclusionCache[ONI_OCCLUSION_CACHE_SIZE];
+UUtBool ONrExperimentalLights_SceneEnabled(void) {
     static int enabled = -1;
-    if (enabled < 0) { const char *v = getenv("ONI_WAREHOUSE_LIGHT"); enabled = v && !strcmp(v, "1"); }
-    return enabled && ONgGameState && ONgGameState->levelNumber == 1;
+    if (enabled < 0) {
+        const char *v=getenv("ONI_RELIGHT"), *legacy=getenv("ONI_WAREHOUSE_LIGHT");
+        enabled=(v && !strcmp(v,"1")) || (legacy && !strcmp(legacy,"1"));
+    }
+    return enabled && ONgGameState && ONgGameState->levelNumber > 0;
 }
 static UUtBool ONiWarehouseFixture(OBJtObject *object, uintptr_t unused) {
     OBJtOSD_All osd;
@@ -1801,8 +1833,9 @@ static UUtBool ONiWarehouseFixture(OBJtObject *object, uintptr_t unused) {
     for (UUtUns32 i = 0; data && i < count && oniWarehouseCount < ONI_MAX_WAREHOUSE_FIXTURES; ++i) {
         if (!(data[i].light_flags & OBJcLightFlag_HasLight)) continue;
         OniExperimentalLight *light = &oniWarehouseFixtures[oniWarehouseCount++];
+        light->spinning=UUcFalse;
         light->position = object->position;
-        light->radius = 100.f;
+        light->radius = 190.f;
         light->intensity = 0.45f; /* Original intensity units require calibration. */
         light->red = data[i].filter_color[0]; light->green = data[i].filter_color[1]; light->blue = data[i].filter_color[2];
         if (light->red <= 0 && light->green <= 0 && light->blue <= 0)
@@ -1827,26 +1860,147 @@ static void ONiWarehouseCorona(EPtEnvParticle *env, uintptr_t unused) {
     M3tPoint3D position;
     if (P3rGetRealPosition(env->particle_class,env->particle,&position)) return;
     OniExperimentalLight *light=&oniIndicatorLights[oniIndicatorCount++];
-    light->position=position;light->radius=48.f;light->intensity=1.4f;
+    light->spinning=UUcFalse;
+    light->position=position;light->radius=40.f;light->intensity=0.45f;
     light->red=r;light->green=g;light->blue=b;
 }
+// An authored fire emitter can remain present while scripts disable all its
+// emitters. Only illuminate while at least one flame emitter is actually on.
+// Flicker is deterministic visual animation and never consumes gameplay RNG.
+static void ONiSceneFire(EPtEnvParticle *env, uintptr_t data) {
+    UUtUns32 now=(UUtUns32)data;
+    if(oniFireCount>=ONI_MAX_FIRE_LIGHTS || !env->particle || !env->particle_class ||
+       env->particle->header.self_ref!=env->particle_self_ref ||
+       (env->particle->header.flags & P3cParticleFlag_Deleted)) return;
+    if ((strncmp(env->classname,"env_fire",8) || !strstr(env->classname,"_e01") || strstr(env->classname,"fireball")) &&
+        strcmp(env->classname,"flame1_e") && strcmp(env->classname,"flame2_e")) return;
+    P3tParticleDefinition *def=env->particle_class->definition;
+    if(!def || !def->num_emitters) return;
+    P3tParticleEmitterData *emitters=(P3tParticleEmitterData *)env->particle->vararray;
+    UUtBool active=UUcFalse;
+    for(UUtUns32 i=0;i<def->num_emitters;++i) {
+        if(emitters[i].num_emitted!=P3cEmitterDisabled &&
+           (strstr(def->emitter[i].classname,"_p01") || !strncmp(def->emitter[i].classname,"flame",5))) {active=UUcTrue;break;}
+    }
+    if(!active)return;
+    M3tPoint3D position;if(P3rGetRealPosition(env->particle_class,env->particle,&position))return;
+    for(UUtUns32 i=0;i<oniFireCount;++i) {
+        float x=position.x-oniFireLights[i].position.x,y=position.y-oniFireLights[i].position.y,z=position.z-oniFireLights[i].position.z;
+        if(x*x+y*y+z*z<256.f)return;
+    }
+    float phase=position.x*0.013f+position.y*0.017f+position.z*0.019f;
+    float time=(float)now/60.f;
+    float flicker=0.82f+0.11f*sinf(time*6.3f+phase)+0.07f*sinf(time*10.7f+phase*1.7f);
+    OniExperimentalLight *light=&oniFireLights[oniFireCount++];
+    light->spinning=UUcFalse;
+    light->position=position;light->radius=210.f;light->intensity=2.8f*flicker;
+    light->red=1.f;light->green=0.37f;light->blue=0.08f;
+}
+// Some vehicle flares are persistent particles spawned once by an emitter.
+// After that one emission the emitter becomes disabled even though its flare
+// remains visible. Check the emitted particles themselves before deciding
+// that a vehicle light is off. Match both class and position, since other
+// vehicles can have instances of the same flare class elsewhere in the level.
+static UUtBool ONiSceneHasLiveFlare(const P3tParticleDefinition *def, const M3tPoint3D *origin) {
+    for(UUtUns32 i=0;i<def->num_emitters;++i) {
+        P3tParticleClass *cls=def->emitter[i].emittedclass;
+        if(!cls)continue;
+        for(P3tParticle *p=cls->headptr;p;p=p->header.nextptr) {
+            if(p->header.flags & (P3cParticleFlag_Hidden|P3cParticleFlag_Deleted))continue;
+            M3tPoint3D pos;if(P3rGetRealPosition(cls,p,&pos))continue;
+            float x=pos.x-origin->x,y=pos.y-origin->y,z=pos.z-origin->z;
+            if(x*x+y*y+z*z<4.f)return UUcTrue;
+        }
+    }
+    return UUcFalse;
+}
+// Track actual live headlight and emergency-light coronas, plus coronas
+// attached to moving objects. Never infer an active light from a car model.
+static void ONiSceneExtraCorona(EPtEnvParticle *env) {
+    UUtBool headlight=!strncmp(env->classname,"headlight",9);
+    UUtBool indicator=!strcmp(env->classname,"emlight") || !strcmp(env->classname,"emlight2");
+    UUtBool beacon=!strncmp(env->classname,"env_emlite_e",12);
+    UUtBool emergencyCorona=!strncmp(env->classname,"env_emlite_p",12);
+    UUtBool moving=!strncmp(env->classname,"env_lensflare",13) &&
+        (env->dynamic_matrix || env->owner_type==EPcParticleOwner_Object || env->owner_type==EPcParticleOwner_Furniture);
+    if((!headlight && !indicator && !beacon && !emergencyCorona && !moving) || oniExtraCoronaCount>=ONI_MAX_EXTRA_CORONAS ||
+       !env->particle || !env->particle_class || !env->particle_class->definition ||
+       env->particle->header.self_ref!=env->particle_self_ref ||
+       (env->particle->header.flags & P3cParticleFlag_Deleted) ||
+       ((env->particle->header.flags & P3cParticleFlag_Hidden) && !headlight))return;
+    P3tParticleClass *cls=env->particle_class;P3tParticle *particle=env->particle;
+    P3tParticleDefinition *def=cls->definition;IMtShade tint=0;
+    IMtShade *dynamic=P3rGetTintPtr(cls,particle);
+    if(dynamic)tint=*dynamic;
+    else if(def->appearance.tint.type==P3cValueType_Shade)tint=def->appearance.tint.u.shade_const.val;
+    M3tPoint3D position;if(P3rGetRealPosition(cls,particle,&position))return;
+    // Some headlights use an invisible parent to spawn the visible flare.
+    if(headlight && (particle->header.flags & P3cParticleFlag_Hidden) &&
+       !ONiSceneHasLiveFlare(def,&position))return;
+    if(beacon && def->num_emitters) {
+        P3tParticleEmitterData *data=(P3tParticleEmitterData *)particle->vararray;
+        UUtBool active=UUcFalse;
+        for(UUtUns32 i=0;i<def->num_emitters;++i) {
+            if(data[i].num_emitted==P3cEmitterDisabled)continue;
+            active=UUcTrue;
+            P3tParticleClass *emitted=def->emitter[i].emittedclass;
+            if(emitted && emitted->definition && emitted->definition->appearance.tint.type==P3cValueType_Shade)
+                tint=emitted->definition->appearance.tint.u.shade_const.val;
+            break;
+        }
+        if(!active && !ONiSceneHasLiveFlare(def,&position))return;
+    }
+    float r=((tint>>16)&255)/255.f,g=((tint>>8)&255)/255.f,b=(tint&255)/255.f;
+    if(r<0.02f && g<0.02f && b<0.02f)return;
+    oniExtraVehicle[oniExtraCoronaCount]=headlight || beacon || emergencyCorona;
+    OniExperimentalLight *light=&oniExtraCoronas[oniExtraCoronaCount++];
+    light->position=position;light->radius=headlight?200.f:165.f;
+    light->intensity=headlight?0.9f:(beacon?0.55f:0.5f);
+    light->red=r;light->green=g;light->blue=b;
+    /* e01 is the roof beacon. Its authored effect combines orange and red
+       flares; use opposing beams rather than a single stationary red lamp. */
+    light->spinning=beacon && !strncmp(env->classname,"env_emlite_e01",14);
+    if(light->spinning) {
+        light->intensity=1.6f;
+        light->red=1.f;light->green=0.10f;light->blue=0.10f;
+        if(oniExtraCoronaCount<ONI_MAX_EXTRA_CORONAS) {
+            oniExtraVehicle[oniExtraCoronaCount]=UUcTrue;
+            OniExperimentalLight *orange=&oniExtraCoronas[oniExtraCoronaCount++];
+            *orange=*light;orange->red=1.f;orange->green=0.42f;orange->blue=0.04f;
+        }
+    }
+}
+static void ONiSceneDynamicParticle(EPtEnvParticle *env, uintptr_t now) {
+    ONiWarehouseCorona(env,0);
+    ONiSceneFire(env,now);
+    ONiSceneExtraCorona(env);
+}
 static void ONiWarehouseRefreshCoronas(UUtUns32 now) {
-    if (!ONrExperimentalLights_WarehouseEnabled() || (oniIndicatorTickValid && oniIndicatorTick==now)) return;
-    oniIndicatorTick=now;oniIndicatorTickValid=UUcTrue;oniIndicatorCount=0;
-    EPrEnumerateAllParticles(ONiWarehouseCorona,0);
+    if (!ONrExperimentalLights_SceneEnabled() || (oniIndicatorTickValid && oniIndicatorTick==now)) return;
+    oniIndicatorTick=now;oniIndicatorTickValid=UUcTrue;oniIndicatorCount=0;oniFireCount=0;oniExtraCoronaCount=0;
+    EPrEnumerateAllParticles(ONiSceneDynamicParticle,(uintptr_t)now);
+    if(oniExtraCoronaCount && !oniExtraCoronaLogged) {
+        UUtUns32 spinning=0;for(UUtUns32 i=0;i<oniExtraCoronaCount;++i)if(oniExtraCoronas[i].spinning)++spinning;
+        UUrStartupMessage("[scene-light] active extra coronas: %u (%u sweeping beacons)",(unsigned)oniExtraCoronaCount,(unsigned)spinning);
+        oniExtraCoronaLogged=UUcTrue;
+    }
+    if(oniFireCount && !oniFireLogged) {
+        UUrStartupMessage("[scene-light] active fire emitters: %u",(unsigned)oniFireCount);
+        oniFireLogged=UUcTrue;
+    }
     if (oniIndicatorCount && !oniIndicatorLogged) {
         UUtUns32 red=0,green=0;
         for(UUtUns32 i=0;i<oniIndicatorCount;++i) {
             if(oniIndicatorLights[i].red>oniIndicatorLights[i].green)++red;
             else if(oniIndicatorLights[i].green>oniIndicatorLights[i].red)++green;
         }
-        UUrStartupMessage("[warehouse-light] active locklight coronas: %u (%u red, %u green)",
+        UUrStartupMessage("[scene-light] active locklight coronas: %u (%u red, %u green)",
             (unsigned)oniIndicatorCount,(unsigned)red,(unsigned)green);
         oniIndicatorLogged=UUcTrue;
     }
 }
-// Warehouse-specific fallback: these quads use the level's light-face texture.
-// They are proxies for fixtures, not retained authoring light records.
+// Known fixture materials are proxies for authored lights; the original
+// retail levels do not necessarily retain their light records.
 static UUtUns32 ONiWarehouseSurfaceLights(void) {
     AKtEnvironment *env = ONgGameState->level ? ONgGameState->level->environment : NULL;
     UUtUns32 added = 0;
@@ -1855,7 +2009,15 @@ static UUtUns32 ONiWarehouseSurfaceLights(void) {
         UUtUns32 tex=env->gqRenderArray->gqRender[i].textureMapIndex;
         if (tex>=env->textureMapArray->numMaps) continue;
         M3tTextureMap *map=env->textureMapArray->maps[tex];
-        if (!map || strcmp(map->debugName,"WH_LIGHT_FACE")) continue;
+        if (!map) continue;
+        static const char *fixtureNames[]={"WH_LIGHT_FACE","WH_LIGHTFACERED","WH_INTBLUELITE",
+            "WH_INTLIGHTGRID","WH_TRLIGHTGRID","TR_LAMP","TC_ELIGHT","MC_MOUNT_LITE1",
+            "MC_CEILING_LIGHT","LIGHT_CIEL01","SB_STREETLIGHT","AIR_BAYLIGHT2",
+            "MPC_LIGHT_FACE","MPC_INTERIOR_WALL_LIGHT"};
+        UUtBool known=UUcFalse;
+        for(UUtUns32 t=0;t<sizeof(fixtureNames)/sizeof(fixtureNames[0]);++t)
+            if(!strcmp(map->debugName,fixtureNames[t])) {known=UUcTrue;break;}
+        if(!known)continue;
         AKtGQ_General *gq=&env->gqGeneralArray->gqGeneral[i];
         UUtUns32 n=(gq->flags & AKcGQ_Flag_Triangle)?3:4;
         M3tPoint3D center={0,0,0}; UUtBool valid=UUcTrue;
@@ -1873,29 +2035,106 @@ static UUtUns32 ONiWarehouseSurfaceLights(void) {
         }
         if (duplicate || oniWarehouseCount>=ONI_MAX_WAREHOUSE_FIXTURES) continue;
         OniExperimentalLight *light=&oniWarehouseFixtures[oniWarehouseCount++];
-        light->position=center;light->intensity=0.65f;light->radius=100.f;
-        light->red=1.0f;light->green=0.9f;light->blue=0.75f;++added;
+        light->spinning=UUcFalse;
+        light->position=center;light->intensity=0.65f;light->radius=190.f;
+        if (strstr(map->debugName,"RED")) {light->red=1.f;light->green=0.35f;light->blue=0.30f;}
+        else if (strstr(map->debugName,"BLUE")) {light->red=0.45f;light->green=0.65f;light->blue=1.f;}
+        else {light->red=1.f;light->green=0.9f;light->blue=0.75f;}
+        ++added;
     }
     return added;
 }
+// Environment coronas provide additional authored fixture positions on maps
+// whose light-source records were discarded. This is a static approximation;
+// scripted door indicators are handled separately and updated every tick.
+static void ONiSceneCoronaFixture(EPtEnvParticle *env, uintptr_t unused) {
+    (void)unused;
+    if(strncmp(env->classname,"env_lensflare",13) || env->dynamic_matrix ||
+       env->owner_type==EPcParticleOwner_Object || env->owner_type==EPcParticleOwner_Furniture ||
+       oniWarehouseCount>=ONI_MAX_WAREHOUSE_FIXTURES ||
+       !env->particle || !env->particle_class || env->particle->header.self_ref!=env->particle_self_ref ||
+       (env->particle->header.flags & (P3cParticleFlag_Hidden|P3cParticleFlag_Deleted))) return;
+    M3tPoint3D position;if(P3rGetRealPosition(env->particle_class,env->particle,&position))return;
+    for(UUtUns32 i=0;i<oniWarehouseCount;++i){
+        float x=position.x-oniWarehouseFixtures[i].position.x,y=position.y-oniWarehouseFixtures[i].position.y,z=position.z-oniWarehouseFixtures[i].position.z;
+        if(x*x+y*y+z*z<225.f)return;
+    }
+    OniExperimentalLight *light=&oniWarehouseFixtures[oniWarehouseCount++];
+    light->spinning=UUcFalse;
+    light->position=position;light->radius=160.f;light->intensity=0.35f;
+    light->red=1.f;light->green=0.9f;light->blue=0.75f;
+    IMtShade *p=P3rGetTintPtr(env->particle_class,env->particle);IMtShade tint=0;
+    if(p)tint=*p;
+    else if(env->particle_class->definition->appearance.tint.type==P3cValueType_Shade)
+        tint=env->particle_class->definition->appearance.tint.u.shade_const.val;
+    float r=((tint>>16)&255)/255.f,g=((tint>>8)&255)/255.f,b=(tint&255)/255.f;
+    float max=UUmMax(r,UUmMax(g,b)),min=UUmMin(r,UUmMin(g,b));
+    if(max>.15f && max-min>.15f){light->red=r;light->green=g;light->blue=b;}
+}
 static void ONiWarehouseScan(void) {
-    if (oniWarehouseScanned || !ONrExperimentalLights_WarehouseEnabled()) return;
+    if (oniWarehouseScanned || !ONrExperimentalLights_SceneEnabled()) return;
     oniWarehouseObjects = oniWarehouseCount = 0;
     OBJrObjectType_EnumerateObjects(OBJcType_Furniture, ONiWarehouseFixture, 0);
     OBJrObjectType_EnumerateObjects(OBJcType_Console, ONiWarehouseFixture, 0);
-    if (!oniWarehouseObjects) return; /* Objects may not have loaded yet. */
+    if (!ONgGameState->level || !ONgGameState->level->environment) return;
     UUtUns32 marked=oniWarehouseCount;
     UUtUns32 proxies=ONiWarehouseSurfaceLights();
+    UUtUns32 beforeCoronas=oniWarehouseCount;
+    EPrEnumerateAllParticles(ONiSceneCoronaFixture,0);
+    UUtUns32 coronas=oniWarehouseCount-beforeCoronas;
     oniWarehouseScanned = UUcTrue;
-    UUrStartupMessage("[warehouse-light] scanned %u objects: %u marked lights, %u WH_LIGHT_FACE proxy lights (max %u)",
-        (unsigned)oniWarehouseObjects, (unsigned)marked, (unsigned)proxies, ONI_MAX_WAREHOUSE_FIXTURES);
+    UUrStartupMessage("[scene-light] level %d: %u objects, %u marked lights, %u material proxies, %u corona proxies (max %u)",
+        (int)ONgGameState->levelNumber,(unsigned)oniWarehouseObjects,(unsigned)marked,(unsigned)proxies,(unsigned)coronas,ONI_MAX_WAREHOUSE_FIXTURES);
+}
+// The primary moving/colliding projectile classes from Oni's weapon data.
+// Do not include similarly named smoke, muzzle, trail or impact particles.
+typedef struct OniProjectileStyle { const char *name; float r,g,b; } OniProjectileStyle;
+static const OniProjectileStyle oniProjectileStyles[] = {
+    {"w1_tap_p01",1.f,.65f,.18f}, {"w2_sap_p01",1.f,.65f,.18f},
+    {"w3_phr_p01",.65f,.45f,1.f}, {"w4_psm_p01",1.f,1.f,.60f},
+    {"w4_psm_p02",.10f,.80f,.70f}, {"w5_sbg_p01",1.f,.48f,.15f},
+    {"w6_vdg_p01",1.f,.30f,.20f}, {"w7_scc_p01",.65f,.85f,1.f},
+    {"w7a_scc_p01",.65f,.85f,1.f}, {"w8_mbo_p01",.55f,.72f,1.f},
+    {"w9_scr_p01",1.f,.48f,.15f}, {"w11_ba1_p01",1.f,.48f,.15f},
+    {"w12_ba2_p01",1.f,.38f,.12f}, {"w13_muro_p01",1.f,.35f,.35f},
+    {"w14_muro_p01",1.f,.35f,.35f}
+};
+static void ONiExperimentalLights_RefreshProjectiles(UUtUns32 now) {
+    if (!ONiExperimentalLights_Enabled() || (oniProjectileTickValid && oniProjectileTick==now)) return;
+    oniProjectileTick=now;oniProjectileTickValid=UUcTrue;oniProjectileCount=0;
+    P3tParticleClassIterateState state=P3cParticleClass_None;P3tParticleClass *cls;
+    while(P3rIterateClasses(&state,&cls) && oniProjectileCount<ONI_MAX_PROJECTILE_LIGHTS) {
+        if(!cls->definition || !cls->headptr)continue;
+        const OniProjectileStyle *style=NULL;
+        for(UUtUns32 i=0;i<sizeof(oniProjectileStyles)/sizeof(oniProjectileStyles[0]);++i)
+            if(!strcmp(cls->classname,oniProjectileStyles[i].name)){style=&oniProjectileStyles[i];break;}
+        if(!style || !(cls->definition->flags & (P3cParticleClassFlag_Physics_CollideEnv|P3cParticleClassFlag_Physics_CollideChar)))continue;
+        for(P3tParticle *particle=cls->headptr;particle && oniProjectileCount<ONI_MAX_PROJECTILE_LIGHTS;particle=particle->header.nextptr) {
+            if(particle->header.flags & (P3cParticleFlag_Deleted|P3cParticleFlag_Hidden))continue;
+            M3tPoint3D position;if(P3rGetRealPosition(cls,particle,&position))continue;
+            OniExperimentalLight *light=&oniProjectileLights[oniProjectileCount++];
+            light->spinning=UUcFalse;
+            light->position=position;light->radius=65.f;light->intensity=1.2f;
+            light->red=style->r;light->green=style->g;light->blue=style->b;
+            IMtShade *dynamic=P3rGetTintPtr(cls,particle);IMtShade tint=0;
+            if(dynamic)tint=*dynamic;
+            else if(cls->definition->appearance.tint.type==P3cValueType_Shade)tint=cls->definition->appearance.tint.u.shade_const.val;
+            float r=((tint>>16)&255)/255.f,g=((tint>>8)&255)/255.f,b=(tint&255)/255.f;
+            float max=UUmMax(r,UUmMax(g,b)),min=UUmMin(r,UUmMin(g,b));
+            if(max>.15f && max-min>.15f){light->red=r;light->green=g;light->blue=b;}
+        }
+    }
+    if(oniProjectileCount && !oniProjectileLogged){
+        UUrStartupMessage("[world-light] detected active weapon projectiles");oniProjectileLogged=UUcTrue;
+    }
 }
 static void ONiExperimentalLights_Sync(void) {
     if(!ONgGameState)return;
     UUtUns32 now=ONrGameState_GetGameTime();
     if(oniMuzzleLevel!=ONgGameState->levelNumber || now<oniMuzzleLastTick){
         oniMuzzleCount=oniMuzzleNext=0;oniMuzzleLevel=ONgGameState->levelNumber;
-        oniWarehouseScanned=UUcFalse; oniWarehouseCount=0; oniIndicatorCount=0; oniIndicatorTickValid=oniIndicatorLogged=UUcFalse; memset(oniLightCells,0,sizeof(oniLightCells));
+        oniProjectileCount=0;oniProjectileTickValid=oniProjectileLogged=UUcFalse;
+        oniWarehouseScanned=UUcFalse; oniWarehouseCount=0; oniIndicatorCount=0; oniFireCount=0; oniExtraCoronaCount=0; oniExtraCoronaLogged=UUcFalse; memset(oniCoronaCells,0,sizeof(oniCoronaCells)); oniFireLogged=UUcFalse; oniIndicatorTickValid=oniIndicatorLogged=UUcFalse; memset(oniLightCells,0,sizeof(oniLightCells)); memset(oniOcclusionCache,0,sizeof(oniOcclusionCache));
     }
     oniMuzzleLastTick=now;
 }
@@ -1917,29 +2156,98 @@ static void ONiExperimentalLights_Fire(WPtWeapon *weapon, const WPtParticleAttac
     oniMuzzleNext=(oniMuzzleNext+1)%ONI_MAX_EXPERIMENTAL_LIGHTS;
     if(oniMuzzleCount<ONI_MAX_EXPERIMENTAL_LIGHTS)++oniMuzzleCount;
 }
+// A short-lived line-of-sight cache avoids per-frame collision work for every
+// surface. This is a per-surface approximation, not a shadow map: large quads
+// use their centre and moving doors may not be represented by static geometry.
+static UUtBool ONiExperimentalLightOccluded(const M3tPoint3D *source,const M3tPoint3D *target,UUtUns32 now,UUtBool vehicle) {
+    if(!ONgGameState || !ONgGameState->level || !ONgGameState->level->environment) return UUcFalse;
+    float dx=target->x-source->x,dy=target->y-source->y,dz=target->z-source->z;
+    float distance=MUrSqrt(dx*dx+dy*dy+dz*dz);
+    if(!isfinite(distance) || distance<3.f)return UUcFalse;
+    UUtInt32 a[3]={(UUtInt32)floorf(source->x*2.f),(UUtInt32)floorf(source->y*2.f),(UUtInt32)floorf(source->z*2.f)};
+    UUtInt32 b[3]={(UUtInt32)floorf(target->x*2.f),(UUtInt32)floorf(target->y*2.f),(UUtInt32)floorf(target->z*2.f)};
+    UUtUns32 hash=((UUtUns32)a[0]*73856093u ^ (UUtUns32)a[1]*19349663u ^ (UUtUns32)a[2]*83492791u ^
+        (UUtUns32)b[0]*2654435761u ^ (UUtUns32)b[1]*2246822519u ^ (UUtUns32)b[2]*3266489917u) % ONI_OCCLUSION_CACHE_SIZE;
+    OniOcclusionEntry *entry=&oniOcclusionCache[hash];
+    if(entry->valid && entry->vehicle==vehicle && now>=entry->tick && now-entry->tick<15 &&
+       !memcmp(entry->source,a,sizeof(a)) && !memcmp(entry->target,b,sizeof(b)))return entry->blocked;
+    float trim=0.75f/distance;
+    M3tPoint3D start={source->x+dx*trim,source->y+dy*trim,source->z+dz*trim};
+    M3tVector3D ray={dx*(1.f-2.f*trim),dy*(1.f-2.f*trim),dz*(1.f-2.f*trim)};
+    // Akira collision queries use global result storage. Preserve any result a
+    // caller already holds while the renderer performs this visual-only query.
+    static AKtCollision saved[AKcMaxNumCollisions];
+    UUtUns16 savedCount=AKgNumCollisions;
+    if(savedCount>AKcMaxNumCollisions)savedCount=AKcMaxNumCollisions;
+    if(savedCount)memcpy(saved,AKgCollisionList,savedCount*sizeof(saved[0]));
+    AKtEnvironment *env=ONgGameState->level->environment;
+    UUtUns16 maxHits=vehicle?32:1;
+    UUtBool blocked=AKrCollision_Point(env,&start,&ray,
+        AKcGQ_Flag_LOS_CanSee_Skip_AI | AKcGQ_Flag_Jello,maxHits);
+    if(blocked && vehicle && AKgNumCollisions<maxHits && env->gqRenderArray && env->textureMapArray) {
+        // Some authored lamp particles are inside the static car mesh. Ignore
+        // nearby car body / siren hits, but retain all walls, floors and
+        // distant cars as occluders. Never change level geometry or flags.
+        blocked=UUcFalse;
+        for(UUtUns16 i=0;i<AKgNumCollisions;++i) {
+            AKtCollision *hit=&AKgCollisionList[i];UUtBool housing=UUcFalse;
+            float x=hit->collisionPoint.x-source->x,y=hit->collisionPoint.y-source->y,z=hit->collisionPoint.z-source->z;
+            if(x*x+y*y+z*z<24.f*24.f && hit->gqIndex<env->gqRenderArray->numGQs) {
+                UUtUns32 ti=env->gqRenderArray->gqRender[hit->gqIndex].textureMapIndex;
+                M3tTextureMap *map=ti<env->textureMapArray->numMaps?env->textureMapArray->maps[ti]:NULL;
+                if(map) {const char *name=map->debugName;
+                    housing=!strncmp(name,"TCTFCAR",7) || !strncmp(name,"TCTFARMCAR",10) ||
+                        !strncmp(name,"TC_CIVCAR",9) || !strncmp(name,"CAR_A",5) ||
+                        !strncmp(name,"CAR_B",5) || !strcmp(name,"SIREN");
+                }
+            }
+            if(!housing){blocked=UUcTrue;break;}
+        }
+    }
+    if(savedCount)memcpy(AKgCollisionList,saved,savedCount*sizeof(saved[0]));
+    AKgNumCollisions=savedCount;
+    entry->valid=UUcTrue;entry->blocked=blocked;entry->vehicle=vehicle;entry->tick=now;
+    memcpy(entry->source,a,sizeof(a));memcpy(entry->target,b,sizeof(b));
+    return blocked;
+}
 UUtUns32 ONrExperimentalLights_GetAt(const M3tPoint3D *position, OniExperimentalLight *out, UUtUns32 capacity) {
-    if ((!ONiExperimentalLights_Enabled() && !ONrExperimentalLights_WarehouseEnabled()) || !ONgGameState || !out) return 0;
+    if ((!ONiExperimentalLights_Enabled() && !ONrExperimentalLights_SceneEnabled()) || !ONgGameState || !out) return 0;
     ONiExperimentalLights_Sync();
+    if(capacity>ONI_MAX_EXPERIMENTAL_LIGHTS)capacity=ONI_MAX_EXPERIMENTAL_LIGHTS;
+    UUtBool vehicleLight[ONI_MAX_EXPERIMENTAL_LIGHTS]={0};
     UUtUns32 count=0,now=ONrGameState_GetGameTime();
-    for(UUtUns32 i=0;i<oniMuzzleCount && count<capacity;++i){
+    ONiExperimentalLights_RefreshProjectiles(now);
+    UUtBool selectedProjectiles[ONI_MAX_PROJECTILE_LIGHTS]={0};
+    for(UUtUns32 slot=0;slot<6 && count<capacity;++slot) {
+        float best=160.f*160.f;UUtInt32 selected=-1;
+        for(UUtUns32 i=0;i<oniProjectileCount;++i) {
+            float d=0.f;
+            if(position){float x=position->x-oniProjectileLights[i].position.x,y=position->y-oniProjectileLights[i].position.y,z=position->z-oniProjectileLights[i].position.z;d=x*x+y*y+z*z;}
+            if(!selectedProjectiles[i] && d<best){best=d;selected=(UUtInt32)i;}
+        }
+        if(selected<0)break;
+        selectedProjectiles[selected]=UUcTrue;out[count++]=oniProjectileLights[selected];
+    }
+    UUtUns32 muzzleAdded=0;
+    for(UUtUns32 i=0;i<oniMuzzleCount && count<capacity && muzzleAdded<2;++i){
         UUtUns32 age=now-oniMuzzleFlashes[i].tick;
         if(age>=8)continue;
         if (position) {
             float x=position->x-oniMuzzleFlashes[i].position.x, y=position->y-oniMuzzleFlashes[i].position.y, z=position->z-oniMuzzleFlashes[i].position.z;
             if (x*x+y*y+z*z>160.0f*160.0f) continue;
         }
-        out[count].position=oniMuzzleFlashes[i].position;
+        out[count].position=oniMuzzleFlashes[i].position;out[count].spinning=UUcFalse;
         out[count].intensity=1.0f-(float)age/8.0f; out[count].radius=100.f;
         out[count].red=1.0f; out[count].green=0.80f; out[count].blue=0.55f;
-        ++count;
+        ++count; ++muzzleAdded;
     }
     ONiWarehouseScan();
     ONiWarehouseRefreshCoronas(now);
-    if (position && ONrExperimentalLights_WarehouseEnabled() && count<capacity) {
+    if (position && ONrExperimentalLights_SceneEnabled() && count<capacity) {
         // Reserve room for the nearest visible indicator coronas before filling
         // the remaining slots with architectural lights.
         UUtBool used[ONI_MAX_INDICATOR_LIGHTS]={0};
-        for(UUtUns32 slot=0;slot<4 && count<capacity;++slot) {
+        for(UUtUns32 slot=0;slot<6 && count<capacity;++slot) {
             float best=75.f*75.f; UUtInt32 selected=-1;
             for(UUtUns32 i=0;i<oniIndicatorCount;++i) {
                 float x=position->x-oniIndicatorLights[i].position.x,y=position->y-oniIndicatorLights[i].position.y,z=position->z-oniIndicatorLights[i].position.z;
@@ -1949,7 +2257,40 @@ UUtUns32 ONrExperimentalLights_GetAt(const M3tPoint3D *position, OniExperimental
             used[selected]=UUcTrue;out[count++]=oniIndicatorLights[selected];
         }
     }
-    if (position && ONrExperimentalLights_WarehouseEnabled() && count<capacity) {
+    if (position && ONrExperimentalLights_SceneEnabled() && count<capacity && oniExtraCoronaCount) {
+        int cx=(int)floorf(position->x/48.f),cy=(int)floorf(position->y/48.f),cz=(int)floorf(position->z/48.f);
+        UUtUns32 hash=((UUtUns32)cx*73856093u ^ (UUtUns32)cy*19349663u ^ (UUtUns32)cz*83492791u)%ONI_CORONA_CELL_CACHE;
+        OniCoronaCell *cell=&oniCoronaCells[hash];
+        if(!cell->valid || cell->tick!=now || cell->x!=cx || cell->y!=cy || cell->z!=cz) {
+            float distances[6];cell->valid=UUcTrue;cell->tick=now;cell->x=cx;cell->y=cy;cell->z=cz;cell->count=0;
+            float px=(cx+.5f)*48.f,py=(cy+.5f)*48.f,pz=(cz+.5f)*48.f;
+            for(UUtUns32 i=0;i<oniExtraCoronaCount;++i) {
+                float x=oniExtraCoronas[i].position.x-px,y=oniExtraCoronas[i].position.y-py,z=oniExtraCoronas[i].position.z-pz;
+                float d=x*x+y*y+z*z,limit=oniExtraCoronas[i].radius+42.f;if(d>limit*limit)continue;
+                UUtUns32 at=0;while(at<cell->count && distances[at]<=d)++at;if(at>=6)continue;
+                UUtUns32 end=cell->count<6?cell->count++:5;
+                while(end>at){distances[end]=distances[end-1];cell->indices[end]=cell->indices[end-1];--end;}
+                distances[at]=d;cell->indices[at]=i;
+            }
+        }
+        for(UUtUns32 i=0;i<cell->count && count<capacity;++i) {
+            UUtUns32 index=cell->indices[i];
+            vehicleLight[count]=oniExtraVehicle[index];out[count++]=oniExtraCoronas[index];
+        }
+    }
+    if (position && ONrExperimentalLights_SceneEnabled() && count<capacity) {
+        UUtBool usedFires[ONI_MAX_FIRE_LIGHTS]={0};
+        for(UUtUns32 slot=0;slot<6 && count<capacity;++slot) {
+            float best=250.f*250.f;UUtInt32 selected=-1;
+            for(UUtUns32 i=0;i<oniFireCount;++i) {
+                float x=position->x-oniFireLights[i].position.x,y=position->y-oniFireLights[i].position.y,z=position->z-oniFireLights[i].position.z;
+                float d=x*x+y*y+z*z;if(!usedFires[i] && d<best){best=d;selected=(UUtInt32)i;}
+            }
+            if(selected<0)break;
+            usedFires[selected]=UUcTrue;out[count++]=oniFireLights[selected];
+        }
+    }
+    if (position && ONrExperimentalLights_SceneEnabled() && count<capacity) {
         // Cache nearest fixtures by world-space cell, not around the player. The
         // static selection therefore does not change just because the camera moves.
         int cx=(int)floorf(position->x/48.f), cy=(int)floorf(position->y/48.f), cz=(int)floorf(position->z/48.f);
@@ -1962,7 +2303,7 @@ UUtUns32 ONrExperimentalLights_GetAt(const M3tPoint3D *position, OniExperimental
             for (UUtUns32 i=0;i<oniWarehouseCount;++i) {
                 float x=oniWarehouseFixtures[i].position.x-px,y=oniWarehouseFixtures[i].position.y-py,z=oniWarehouseFixtures[i].position.z-pz;
                 float d=x*x+y*y+z*z;
-                if (d>145.f*145.f) continue;
+                if (d>235.f*235.f) continue;
                 UUtUns32 at=0;while(at<cell->count && distances[at]<=d)++at;
                 if(at>=ONI_MAX_EXPERIMENTAL_LIGHTS)continue;
                 UUtUns32 end=cell->count<ONI_MAX_EXPERIMENTAL_LIGHTS?cell->count++:ONI_MAX_EXPERIMENTAL_LIGHTS-1;
@@ -1971,6 +2312,79 @@ UUtUns32 ONrExperimentalLights_GetAt(const M3tPoint3D *position, OniExperimental
             }
         }
         for(UUtUns32 i=0;i<cell->count && count<capacity;++i) out[count++]=oniWarehouseFixtures[cell->indices[i]];
+    }
+    if(position) {
+        UUtUns32 visible=0;
+        for(UUtUns32 i=0;i<count;++i)
+            if(!ONiExperimentalLightOccluded(&out[i].position,position,now,vehicleLight[i])) out[visible++]=out[i];
+        count=visible;
+    }
+    return count;
+}
+// Find the nearest point on a triangle, including its edges. Large road
+// polygons need this rather than a single centroid for local light selection.
+static M3tPoint3D ONiLightClosestTriangle(M3tPoint3D p,M3tPoint3D a,M3tPoint3D b,M3tPoint3D c) {
+    M3tPoint3D v[3]={a,b,c},best=a;
+    float abx=b.x-a.x,aby=b.y-a.y,abz=b.z-a.z;
+    float acx=c.x-a.x,acy=c.y-a.y,acz=c.z-a.z;
+    float apx=p.x-a.x,apy=p.y-a.y,apz=p.z-a.z;
+    float d00=abx*abx+aby*aby+abz*abz,d01=abx*acx+aby*acy+abz*acz;
+    float d11=acx*acx+acy*acy+acz*acz,d20=apx*abx+apy*aby+apz*abz,d21=apx*acx+apy*acy+apz*acz;
+    float denom=d00*d11-d01*d01;
+    if(denom>1e-8f) {
+        float u=(d11*d20-d01*d21)/denom,w=(d00*d21-d01*d20)/denom;
+        if(u>=0.f && w>=0.f && u+w<=1.f) {
+            M3tPoint3D q={a.x+u*abx+w*acx,a.y+u*aby+w*acy,a.z+u*abz+w*acz};return q;
+        }
+    }
+    float bestD=INFINITY;
+    for(int i=0;i<3;++i) {
+        M3tPoint3D x=v[i],y=v[(i+1)%3];float dx=y.x-x.x,dy=y.y-x.y,dz=y.z-x.z;
+        float len=dx*dx+dy*dy+dz*dz,t=len>1e-8f?((p.x-x.x)*dx+(p.y-x.y)*dy+(p.z-x.z)*dz)/len:0.f;
+        t=UUmPin(t,0.f,1.f);M3tPoint3D q={x.x+t*dx,x.y+t*dy,x.z+t*dz};
+        dx=p.x-q.x;dy=p.y-q.y;dz=p.z-q.z;float d=dx*dx+dy*dy+dz*dz;
+        if(d<bestD){bestD=d;best=q;}
+    }
+    return best;
+}
+static float ONiLightDistanceSq(M3tPoint3D a,M3tPoint3D b) {
+    float x=a.x-b.x,y=a.y-b.y,z=a.z-b.z;return x*x+y*y+z*z;
+}
+static UUtBool ONiLightSame(const OniExperimentalLight *a,const OniExperimentalLight *b) {
+    return a->position.x==b->position.x && a->position.y==b->position.y && a->position.z==b->position.z &&
+        a->red==b->red && a->green==b->green && a->blue==b->blue && a->spinning==b->spinning;
+}
+UUtUns32 ONrExperimentalLights_GetForSurface(const M3tPoint3D *v,UUtUns32 n,OniExperimentalLight *out,UUtUns32 capacity) {
+    if(!v || n<3 || !out || !capacity)return 0;
+    if(n>4)n=4;
+    M3tPoint3D center={(v[0].x+v[1].x+v[2].x)/3.f,(v[0].y+v[1].y+v[2].y)/3.f,(v[0].z+v[1].z+v[2].z)/3.f};
+    OniExperimentalLight base[ONI_MAX_EXPERIMENTAL_LIGHTS];
+    UUtUns32 limit=UUmMin(capacity,(UUtUns32)ONI_MAX_EXPERIMENTAL_LIGHTS);
+    UUtUns32 baseCount=ONrExperimentalLights_GetAt(&center,base,limit),count=0;
+    if(ONrExperimentalLights_SceneEnabled() && oniExtraCoronaCount) {
+        // At most six nearby live coronas get priority; retain existing
+        // collision checks, but trace to the nearest point on the surface.
+        float distances[6];UUtUns32 indices[6],selected=0;UUtUns32 now=ONrGameState_GetGameTime();
+        M3tPoint3D lo=v[0],hi=v[0];
+        for(UUtUns32 i=1;i<n;++i){lo.x=UUmMin(lo.x,v[i].x);lo.y=UUmMin(lo.y,v[i].y);lo.z=UUmMin(lo.z,v[i].z);
+            hi.x=UUmMax(hi.x,v[i].x);hi.y=UUmMax(hi.y,v[i].y);hi.z=UUmMax(hi.z,v[i].z);}
+        for(UUtUns32 i=0;i<oniExtraCoronaCount;++i) {
+            const OniExperimentalLight *light=&oniExtraCoronas[i];M3tPoint3D p=light->position;float r=light->radius;
+            if(p.x<lo.x-r || p.x>hi.x+r || p.y<lo.y-r || p.y>hi.y+r || p.z<lo.z-r || p.z>hi.z+r)continue;
+            M3tPoint3D q=ONiLightClosestTriangle(p,v[0],v[1],v[2]);float d=ONiLightDistanceSq(p,q);
+            if(n==4) {M3tPoint3D q2=ONiLightClosestTriangle(p,v[0],v[2],v[3]);float d2=ONiLightDistanceSq(p,q2);if(d2<d){d=d2;q=q2;}}
+            if(d>=light->radius*light->radius)continue;
+            UUtUns32 at=0;while(at<selected && distances[at]<=d)++at;if(at>=6)continue;
+            if(ONiExperimentalLightOccluded(&p,&q,now,oniExtraVehicle[i]))continue;
+            UUtUns32 end=selected<6?selected++:5;
+            while(end>at){distances[end]=distances[end-1];indices[end]=indices[end-1];--end;}
+            distances[at]=d;indices[at]=i;
+        }
+        for(UUtUns32 i=0;i<selected && count<limit;++i)out[count++]=oniExtraCoronas[indices[i]];
+    }
+    for(UUtUns32 i=0;i<baseCount && count<limit;++i) {
+        UUtBool duplicate=UUcFalse;for(UUtUns32 j=0;j<count;++j)if(ONiLightSame(&base[i],&out[j])){duplicate=UUcTrue;break;}
+        if(!duplicate)out[count++]=base[i];
     }
     return count;
 }

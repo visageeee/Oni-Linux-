@@ -4997,6 +4997,16 @@ static void ONiGameState_Display_Overlay_Elements(Display_Performance_Variables	
 		M3rDraw_Commit_Alpha();
 	M3rGeom_State_Pop();
 
+#if defined(__linux__) && UUmSDL
+    {
+        extern void ONrExperimentalFog_Draw(float near_plane, float far_plane);
+        M3tGeomCamera *fog_camera=NULL;float near_plane=0.f,far_plane=0.f;
+        if(M3rCamera_GetActive(&fog_camera)==UUcError_None && fog_camera) {
+            M3rCamera_GetStaticData(fog_camera,NULL,NULL,&near_plane,&far_plane);
+            ONrExperimentalFog_Draw(near_plane,far_plane);
+        }
+    }
+#endif
 	ONrGameState_DisplayAiming();
 
 	// Draw the ui elements & fade

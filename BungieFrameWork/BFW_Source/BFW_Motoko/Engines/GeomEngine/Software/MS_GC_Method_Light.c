@@ -48,7 +48,7 @@ MSrGeomContext_Method_LightList_Directional(
 		nz = inLightList[itr].direction.x;
 #if defined(__linux__) && UUmSDL
         // Preserve the legacy path outside the opt-in experiment.
-        if (ONrExperimentalLights_WarehouseEnabled()) nz = inLightList[itr].direction.z;
+        if (ONrExperimentalLights_CorrectDirection()) nz = inLightList[itr].direction.z;
 #endif
 
 		mag = MUrSqrt(nx * nx + ny * ny + nz * nz);
