@@ -15,6 +15,7 @@
 #include "WM_PopupMenu.h"
 
 #include "Oni_GameState.h"
+#include "Oni_ExtraSettings.h"
 #include "Oni_OutGameUI.h"
 #include "Oni_Motoko.h"
 #include "Oni_Sound2.h"
@@ -629,9 +630,21 @@ ONiOGU_Options_Callback(
 	{
 		case WMcMessage_InitDialog:
 			ONiOGU_Options_InitDialog(inDialog);
+#if defined(__linux__) && UUmSDL
+            ONrExtraSettings_Attach(inDialog, UUcTrue);
+#endif
 		break;
 
+		case WMcMessage_Destroy:
+#if defined(__linux__) && UUmSDL
+            ONrExtraSettings_Detach(inDialog);
+#endif
+        break;
+
 		case WMcMessage_Command:
+#if defined(__linux__) && UUmSDL
+            if (ONrExtraSettings_Command(inDialog, UUmLowWord(inParam1))) break;
+#endif
 			ONiOGU_Options_HandleCommand(inDialog, inParam1, (WMtWindow*)inParam2);
 		break;
 

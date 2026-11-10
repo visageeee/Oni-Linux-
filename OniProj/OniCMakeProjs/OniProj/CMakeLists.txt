@@ -436,6 +436,7 @@ set(SOURCE_FILES
         ../../OniGameSource/Oni_Camera.h
         ../../OniGameSource/Oni_Camera_Templates.c
         ../../OniGameSource/Oni_StencilShadows.c
+        ../../OniGameSource/Oni_ExtraSettings.c
         ../../OniGameSource/Oni_Character.c
         ../../OniGameSource/Oni_Character.h
         ../../OniGameSource/Oni_Character_Animation.h

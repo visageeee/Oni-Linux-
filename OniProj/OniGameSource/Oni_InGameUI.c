@@ -18,6 +18,7 @@
 #include "Oni_GameState.h"
 #include "Oni_GameStatePrivate.h"
 #include "Oni_InGameUI.h"
+#include "Oni_ExtraSettings.h"
 #include "Oni_Sound2.h"
 #include "Oni_Persistance.h"
 
@@ -3376,6 +3377,9 @@ ONiPauseScreen_InitDialog(
 	// enable the buttons
 	ONiPS_EnableButtons(inDialog, data);
 
+#if defined(__linux__) && UUmSDL
+    ONrExtraSettings_Attach(inDialog, UUcFalse);
+#endif
 	// turn off the message window while the pause display is up
 	COrConsole_TemporaryDisable(UUcTrue);
 	COrMessage_TemporaryDisable(UUcTrue);
@@ -3608,10 +3612,16 @@ ONiPauseScreen_Callback(
 		break;
 
 		case WMcMessage_Destroy:
+#if defined(__linux__) && UUmSDL
+            ONrExtraSettings_Detach(inDialog);
+#endif
 			ONiPauseScreen_Destroy(inDialog);
 		break;
 
 		case WMcMessage_Command:
+#if defined(__linux__) && UUmSDL
+            if(ONrExtraSettings_Command(inDialog,UUmLowWord(inParam1)))break;
+#endif
 			ONiPauseScreen_HandleCommand(inDialog, inParam1, (WMtWindow*)inParam2);
 		break;
 

@@ -1765,8 +1765,13 @@ static UUtBool ONiExperimentalLights_Enabled(void) {
     if(enabled<0){const char *v=getenv("ONI_WORLD_LIGHT");enabled=(v && !strcmp(v,"1"));}
     return (UUtBool)enabled;
 }
+static UUtBool ONiExperimentalLights_HitEnabled(void) {
+    static int enabled=-1;
+    if(enabled<0){const char *v=getenv("ONI_HIT_LIGHT");enabled=(v && !strcmp(v,"1"));}
+    return (UUtBool)enabled;
+}
 float ONrExperimentalLights_AnimationTime(void) { return ONgGameState ? (float)ONrGameState_GetGameTime()/60.f : 0.f; }
-UUtBool ONrExperimentalLights_WeaponEnabled(void) { return ONiExperimentalLights_Enabled(); }
+UUtBool ONrExperimentalLights_WeaponEnabled(void) { return ONiExperimentalLights_Enabled() || ONiExperimentalLights_HitEnabled(); }
 static UUtBool oniExperimentalCorrectDirection;
 UUtBool ONrExperimentalLights_CorrectDirection(void) { return oniExperimentalCorrectDirection; }
 void ONrExperimentalLights_SetCorrectDirection(UUtBool enabled) { oniExperimentalCorrectDirection=enabled; }
@@ -1795,6 +1800,10 @@ static UUtBool oniFireLogged;
 static OniExperimentalLight oniProjectileLights[ONI_MAX_PROJECTILE_LIGHTS];
 static UUtUns32 oniProjectileCount, oniProjectileTick;
 static UUtBool oniProjectileTickValid, oniProjectileLogged;
+#define ONI_MAX_HIT_LIGHTS 32
+static OniExperimentalLight oniHitLights[ONI_MAX_HIT_LIGHTS];
+static UUtUns32 oniHitCount,oniHitTick;
+static UUtBool oniHitTickValid,oniHitLogged;
 
 #define ONI_LIGHT_CELL_CACHE 2048
 typedef struct OniLightCell {
@@ -2086,11 +2095,11 @@ static void ONiWarehouseScan(void) {
     UUrStartupMessage("[scene-light] level %d: %u objects, %u marked lights, %u material proxies, %u corona proxies (max %u)",
         (int)ONgGameState->levelNumber,(unsigned)oniWarehouseObjects,(unsigned)marked,(unsigned)proxies,(unsigned)coronas,ONI_MAX_WAREHOUSE_FIXTURES);
 }
-// The primary moving/colliding projectile classes from Oni's weapon data.
-// Do not include similarly named smoke, muzzle, trail or impact particles.
+// Luminous moving/colliding projectile classes from Oni's weapon data.
+// Ordinary pistol and SMG bullets are intentionally excluded; their muzzle
+// flashes are handled separately. Exclude smoke, trails and impacts too.
 typedef struct OniProjectileStyle { const char *name; float r,g,b; } OniProjectileStyle;
 static const OniProjectileStyle oniProjectileStyles[] = {
-    {"w1_tap_p01",1.f,.65f,.18f}, {"w2_sap_p01",1.f,.65f,.18f},
     {"w3_phr_p01",.65f,.45f,1.f}, {"w4_psm_p01",1.f,1.f,.60f},
     {"w4_psm_p02",.10f,.80f,.70f}, {"w5_sbg_p01",1.f,.48f,.15f},
     {"w6_vdg_p01",1.f,.30f,.20f}, {"w7_scc_p01",.65f,.85f,1.f},
@@ -2128,12 +2137,51 @@ static void ONiExperimentalLights_RefreshProjectiles(UUtUns32 now) {
         UUrStartupMessage("[world-light] detected active weapon projectiles");oniProjectileLogged=UUcTrue;
     }
 }
+// A hit effect contains several long-lived sparks; its p02 particle is the
+// short, visible central flash. Read only live flashes once per simulation
+// tick, so the light follows the particle's own color, position and lifetime.
+static void ONiExperimentalLights_RefreshHits(UUtUns32 now) {
+    if(!ONiExperimentalLights_HitEnabled() || (oniHitTickValid && oniHitTick==now))return;
+    oniHitTick=now;oniHitTickValid=UUcTrue;oniHitCount=0;
+    P3tParticleClassIterateState state=P3cParticleClass_None;P3tParticleClass *cls;
+    const char suffix[]="flash_p02";
+    while(P3rIterateClasses(&state,&cls) && oniHitCount<ONI_MAX_HIT_LIGHTS) {
+        size_t len=strlen(cls->classname),suffixLen=sizeof(suffix)-1;
+        if(!cls->definition || !cls->headptr || len<4+suffixLen || strncmp(cls->classname,"h2h_",4) ||
+           strcmp(cls->classname+len-suffixLen,suffix))continue;
+        for(P3tParticle *p=cls->headptr;p && oniHitCount<ONI_MAX_HIT_LIGHTS;p=p->header.nextptr) {
+            if(p->header.flags & (P3cParticleFlag_Deleted|P3cParticleFlag_Hidden))continue;
+            if(!isfinite(p->header.lifetime) || p->header.lifetime<=0.f)continue;
+            M3tPoint3D position;if(P3rGetRealPosition(cls,p,&position))continue;
+            if(!isfinite(position.x) || !isfinite(position.y) || !isfinite(position.z))continue;
+            float initial=.125f;
+            if(cls->definition->lifetime.type==P3cValueType_Float && cls->definition->lifetime.u.float_const.val>0.f)
+                initial=cls->definition->lifetime.u.float_const.val;
+            float fade=UUmPin(p->header.lifetime/initial,0.f,1.f);
+            IMtShade tint=0xffffffff;IMtShade *dynamic=P3rGetTintPtr(cls,p);
+            if(dynamic)tint=*dynamic;
+            else if(cls->definition->appearance.tint.type==P3cValueType_Shade)tint=cls->definition->appearance.tint.u.shade_const.val;
+            float r=((tint>>16)&255)/255.f,g=((tint>>8)&255)/255.f,b=(tint&255)/255.f;
+            if(r<.02f && g<.02f && b<.02f)continue;
+            UUtBool merged=UUcFalse;
+            for(UUtUns32 i=0;i<oniHitCount;++i) {
+                float x=position.x-oniHitLights[i].position.x,y=position.y-oniHitLights[i].position.y,z=position.z-oniHitLights[i].position.z;
+                if(x*x+y*y+z*z<4.f){if(fade>oniHitLights[i].intensity){oniHitLights[i].intensity=fade;oniHitLights[i].red=r;oniHitLights[i].green=g;oniHitLights[i].blue=b;}merged=UUcTrue;break;}
+            }
+            if(merged)continue;
+            OniExperimentalLight *light=&oniHitLights[oniHitCount++];light->position=position;light->radius=85.f;
+            light->intensity=fade;light->red=r;light->green=g;light->blue=b;light->spinning=UUcFalse;
+        }
+    }
+    if(oniHitCount && !oniHitLogged){UUrStartupMessage("[world-light] detected active melee hit flashes");oniHitLogged=UUcTrue;}
+}
 static void ONiExperimentalLights_Sync(void) {
     if(!ONgGameState)return;
     UUtUns32 now=ONrGameState_GetGameTime();
     if(oniMuzzleLevel!=ONgGameState->levelNumber || now<oniMuzzleLastTick){
         oniMuzzleCount=oniMuzzleNext=0;oniMuzzleLevel=ONgGameState->levelNumber;
         oniProjectileCount=0;oniProjectileTickValid=oniProjectileLogged=UUcFalse;
+        oniHitCount=0;oniHitTickValid=oniHitLogged=UUcFalse;
         oniWarehouseScanned=UUcFalse; oniWarehouseCount=0; oniIndicatorCount=0; oniFireCount=0; oniExtraCoronaCount=0; oniExtraCoronaLogged=UUcFalse; memset(oniCoronaCells,0,sizeof(oniCoronaCells)); oniFireLogged=UUcFalse; oniIndicatorTickValid=oniIndicatorLogged=UUcFalse; memset(oniLightCells,0,sizeof(oniLightCells)); memset(oniOcclusionCache,0,sizeof(oniOcclusionCache));
     }
     oniMuzzleLastTick=now;
@@ -2211,12 +2259,22 @@ static UUtBool ONiExperimentalLightOccluded(const M3tPoint3D *source,const M3tPo
     return blocked;
 }
 UUtUns32 ONrExperimentalLights_GetAt(const M3tPoint3D *position, OniExperimentalLight *out, UUtUns32 capacity) {
-    if ((!ONiExperimentalLights_Enabled() && !ONrExperimentalLights_SceneEnabled()) || !ONgGameState || !out) return 0;
+    if ((!ONrExperimentalLights_WeaponEnabled() && !ONrExperimentalLights_SceneEnabled()) || !ONgGameState || !out) return 0;
     ONiExperimentalLights_Sync();
     if(capacity>ONI_MAX_EXPERIMENTAL_LIGHTS)capacity=ONI_MAX_EXPERIMENTAL_LIGHTS;
     UUtBool vehicleLight[ONI_MAX_EXPERIMENTAL_LIGHTS]={0};
     UUtUns32 count=0,now=ONrGameState_GetGameTime();
     ONiExperimentalLights_RefreshProjectiles(now);
+    ONiExperimentalLights_RefreshHits(now);
+    UUtBool selectedHits[ONI_MAX_HIT_LIGHTS]={0};
+    for(UUtUns32 slot=0;slot<4 && count<capacity;++slot) {
+        float best=160.f*160.f;UUtInt32 selected=-1;
+        for(UUtUns32 i=0;i<oniHitCount;++i) {
+            float d=0.f;if(position){float x=position->x-oniHitLights[i].position.x,y=position->y-oniHitLights[i].position.y,z=position->z-oniHitLights[i].position.z;d=x*x+y*y+z*z;}
+            if(!selectedHits[i] && d<best){best=d;selected=(UUtInt32)i;}
+        }
+        if(selected<0)break;selectedHits[selected]=UUcTrue;out[count++]=oniHitLights[selected];
+    }
     UUtBool selectedProjectiles[ONI_MAX_PROJECTILE_LIGHTS]={0};
     for(UUtUns32 slot=0;slot<6 && count<capacity;++slot) {
         float best=160.f*160.f;UUtInt32 selected=-1;

@@ -79,8 +79,8 @@ static int oni_world_light_try_program(UUtUns32 capacity,const char *vertex,cons
 }
 static int oni_world_light_init(void){
  const char *setting=getenv("ONI_WORLD_LIGHT");
- const char *warehouse=getenv("ONI_WAREHOUSE_LIGHT"), *relight=getenv("ONI_RELIGHT");
- if((!setting || strcmp(setting,"1")) && (!warehouse || strcmp(warehouse,"1")) && (!relight || strcmp(relight,"1")))return 0;
+ const char *warehouse=getenv("ONI_WAREHOUSE_LIGHT"), *relight=getenv("ONI_RELIGHT"), *hit=getenv("ONI_HIT_LIGHT");
+ if((!setting || strcmp(setting,"1")) && (!warehouse || strcmp(warehouse,"1")) && (!relight || strcmp(relight,"1")) && (!hit || strcmp(hit,"1")))return 0;
 #define LOAD_GL(field,type,name) do { oni_world_light.field=(type)SDL_GL_GetProcAddress(name); \
  if(!oni_world_light.field){UUrStartupMessage("[world-light] %s unavailable",name);return 0;} }while(0)
  LOAD_GL(createShader,PFNGLCREATESHADERPROC,"glCreateShader");

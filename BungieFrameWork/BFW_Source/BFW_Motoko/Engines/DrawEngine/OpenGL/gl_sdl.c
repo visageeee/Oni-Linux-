@@ -18,7 +18,7 @@
 #include "oni_distance_fog_sdl.h"
 
 #if defined(__linux__) && UUmSDL
-void ONrExperimentalFog_Draw(float near_plane, float far_plane) { oni_fog_draw(near_plane,far_plane); }
+void ONrExperimentalFog_Draw(float near_plane, float far_plane, float fov_y, float aspect) { oni_fog_draw(near_plane,far_plane,fov_y,aspect); }
 #endif
 
 void M3rSetGamma(

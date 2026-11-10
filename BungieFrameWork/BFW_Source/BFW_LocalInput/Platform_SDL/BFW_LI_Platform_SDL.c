@@ -499,6 +499,9 @@ LIrPlatform_Mode_Set(
 		// reset mouse movement
 		SDL_GetRelativeMouseState(&x, &y);
 	}
+	/* SDL can restore the system cursor when relative mouse mode changes.
+	 * Oni draws its own cursor in menus. */
+	SDL_ShowCursor(SDL_DISABLE);
 }
 
 // ======================================================================
@@ -702,6 +705,7 @@ LIrPlatform_Update(
 					break;
 					case SDL_WINDOWEVENT_FOCUS_GAINED:
 					case SDL_WINDOWEVENT_RESTORED:
+						SDL_ShowCursor(SDL_DISABLE);
 						LIrAutoPause_Cancel();
 					break;
 				}

@@ -10,6 +10,7 @@
 #include "BFW.h"
 
 #include "Oni_Platform.h"
+#include "Oni_ExtraSettings.h"
 #include "Oni.h" // for ONgCommandLine.useMetal
 
 #include <signal.h>
@@ -116,6 +117,9 @@ UUtError ONrPlatform_Initialize(
 	ONtPlatformData			*outPlatformData)
 {
 	SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER);
+#if defined(__linux__)
+    ONrExtraSettings_Load();
+#endif
 
 	// SDL2 enables text-input mode at video init, and while it's active the
 	// macOS backend routes every keyDown through the Cocoa text system

@@ -5,12 +5,14 @@ A native Linux port of Bungie's 2001 game *Oni*, forked from [Oni-Linux-](https:
 ## Fork additions
 
 - Mouse-look timing changes and a frame limiter for high-refresh displays.
-- Optional OpenGL colour grading and distance fog.
+- Optional OpenGL colour grading, distance fog and screen-space ambient occlusion.
 - Experimental dynamic lighting across gameplay levels, including supported fixtures, door indicators, fire and vehicle lights. Police beacons cast rotating red and orange light.
-- Experimental lights for muzzle flashes and supported weapon projectiles.
+- Experimental lights for muzzle flashes, supported weapon projectiles, and optional melee hit flashes.
 - Optional experimental stencil shadow volumes cast by animated characters.
 
 These graphics features are opt-in, require the Linux SDL/OpenGL renderer, and do not modify game assets.
+
+Pause the game and choose **Settings**, or choose **Options → Graphics settings** from the main menu, to configure these effects and the frame limiter. Choose **Game options** there for the original controls, audio, display and gameplay settings. Save changes and restart Oni to apply the new graphics settings. They are stored in `graphics.ini` alongside the other user state files; launch environment variables override the saved values.
 
 From `build/bin`, enable scene lighting and weapon lights with:
 
@@ -19,6 +21,12 @@ ONI_RELIGHT=1 ONI_WORLD_LIGHT=1 ./Oni
 ```
 
 Use either variable on its own to enable just that group. The world renderer supports up to 16 lights per surface on capable GPUs, with an eight-light fallback. Characters use approximate per-vertex lighting. Light sources and wall occlusion are approximations, not shadow maps; reflective and transparent surfaces retain their original lighting. The extra lighting adds rendering work and has not been performance tuned.
+
+To add short-lived lights to melee hit flashes, add `ONI_HIT_LIGHT=1`. It follows the flash particle's color and lifetime, and can be used on its own:
+
+```bash
+ONI_HIT_LIGHT=1 ./Oni
+```
 
 To also enable experimental character stencil shadows:
 
@@ -32,13 +40,21 @@ Stencil shadows require an 8-bit stencil buffer, depth clamp and separate stenci
 
 Enable optional distance fog with `ONI_DISTANCE_FOG=1`. `ONI_FOG_START` and `ONI_FOG_END` set distances in world units; `ONI_FOG_STRENGTH` ranges from 0 to 1. Fog includes the skybox and is applied before the HUD.
 
+For optional ambient occlusion, which adds contact shading to visible scene geometry before the HUD:
+
+```bash
+ONI_AO=1 ./Oni
+```
+
+`ONI_AO_RADIUS` sets the effect radius in world units (1–60, default 12), `ONI_AO_STRENGTH` sets its intensity (0–2, default 0.9), and `ONI_AO_BIAS` controls self-shadow suppression (0–0.5, default 0.08). It can be combined with distance fog. This is a screen-space approximation: off-screen or depth-hidden geometry cannot contribute, transparent effects may be imperfect, and it adds GPU work.
+
 For optional full-screen colour grading, including the UI:
 
 ```bash
 ONI_SHADER=warm ./Oni
 ```
 
-`ONI_SHADER=neutral` selects a passthrough shader. If a shader cannot be initialized, the game falls back to the original rendering path. Check `startup.txt` for `[shader]`, `[world-light]`, `[scene-light]` and `[stencil-shadow]` diagnostics.
+`ONI_SHADER=neutral` selects a passthrough shader. If a shader cannot be initialized, the game falls back to the original rendering path. Check `startup.txt` for `[shader]`, `[world-light]`, `[scene-light]`, `[scene-depth]` and `[stencil-shadow]` diagnostics.
 
 The frame limiter is enabled by default. Set `ONI_FPS_CAP=0` to disable it for comparison. See [HISTORY.md](HISTORY.md) for upstream changes.
 
